@@ -25,9 +25,39 @@ async function bootstrap() {
   // Global Prefix
   app.setGlobalPrefix('api');
 
+  const allowedOriginsEnv = configService.get<string>('ALLOWED_ORIGINS') || '';
+  const parsedOrigins = allowedOriginsEnv
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const allowedOrigins = Array.from(
+    new Set([
+      frontendUrl,
+      'https://toha.buxaa.in',
+      'http://toha.buxaa.in',
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      ...parsedOrigins,
+    ]),
+  );
+
   // CORS Setup
   app.enableCors({
-    origin: [frontendUrl, 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, postman)
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.buxaa.in') ||
+        origin.includes('buxaa.in')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type,Accept,Authorization',
