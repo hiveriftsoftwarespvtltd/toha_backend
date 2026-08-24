@@ -35,7 +35,6 @@ async function bootstrap() {
     new Set([
       frontendUrl,
       'https://toha.buxaa.in',
-      'http://toha.buxaa.in',
       'http://localhost:5173',
       'http://localhost:5174',
       'http://localhost:3000',
@@ -47,16 +46,15 @@ async function bootstrap() {
   // CORS Setup
   app.enableCors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, postman)
-      if (!origin) return callback(null, true);
-      if (
-        allowedOrigins.includes(origin) ||
-        origin.endsWith('.buxaa.in') ||
-        origin.includes('buxaa.in')
-      ) {
+      if (!origin) {
         return callback(null, true);
       }
-      return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`), false);
     },
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
