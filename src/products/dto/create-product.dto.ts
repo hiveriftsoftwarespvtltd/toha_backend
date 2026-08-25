@@ -110,5 +110,10 @@ export class CreateProductDto {
   @ApiProperty({ example: true, required: false })
   @IsBoolean()
   @IsOptional()
+  isDealOfTheDay?: boolean;
+
+  @ApiProperty({ example: true, required: false })
+  @IsBoolean()
+  @IsOptional()
   isSale?: boolean;
 }

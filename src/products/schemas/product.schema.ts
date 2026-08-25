@@ -70,6 +70,9 @@ export class Product {
   @Prop({ default: false, index: true })
   isSale: boolean;
 
+  @Prop({ default: false, index: true })
+  isDealOfTheDay: boolean;
+
   @Prop({ default: 10, type: Number, index: true })
   stock: number;
 
