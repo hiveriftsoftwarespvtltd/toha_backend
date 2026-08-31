@@ -129,6 +129,48 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
+  async updateAdminCredentials(
+    userId: string,
+    dto: { name?: string; email?: string; currentPassword?: string; newPassword?: string }
+  ) {
+    let user = await this.userModel.findById(userId).exec();
+    if (!user || user.role !== Role.ADMIN) {
+      user = await this.userModel.findOne({ role: Role.ADMIN }).exec();
+    }
+    if (!user) {
+      throw new UnauthorizedException('Admin user not found.');
+    }
+
+    if (dto.name) {
+      user.name = dto.name.trim();
+    }
+
+    if (dto.email && dto.email.trim()) {
+      const newEmail = dto.email.trim().toLowerCase();
+      if (newEmail !== user.email) {
+        const existing = await this.userModel.findOne({ email: newEmail }).exec();
+        if (existing && existing._id.toString() !== user._id.toString()) {
+          throw new BadRequestException('Another user with this email already exists.');
+        }
+        user.email = newEmail;
+      }
+    }
+
+    if (dto.newPassword && dto.newPassword.trim()) {
+      if (dto.currentPassword && user.passwordHash) {
+        const isValid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+        if (!isValid) {
+          throw new BadRequestException('Current password is incorrect.');
+        }
+      }
+      const salt = await bcrypt.genSalt(10);
+      user.passwordHash = await bcrypt.hash(dto.newPassword.trim(), salt);
+    }
+
+    const updatedUser = await user.save();
+    return this.sanitizeUser(updatedUser);
+  }
+
   sanitizeUser(user: UserDocument) {
     const obj = user.toObject();
     delete obj.passwordHash;

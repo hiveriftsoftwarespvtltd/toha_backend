@@ -57,6 +57,22 @@ export class AuthController {
     };
   }
 
+  @Post('admin/update-credentials')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update Admin Profile & Credentials (Email/Password/Name)' })
+  async updateAdminCredentials(
+    @CurrentUser() user: UserDocument,
+    @Body() body: { name?: string; email?: string; currentPassword?: string; newPassword?: string }
+  ) {
+    const data = await this.authService.updateAdminCredentials(user ? user._id.toString() : '', body);
+    return {
+      success: true,
+      message: 'Admin credentials updated successfully!',
+      data,
+    };
+  }
+
   @Post('logout')
   @ApiOperation({ summary: 'Customer/Admin Logout' })
   async logout() {
