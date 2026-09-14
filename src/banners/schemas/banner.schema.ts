@@ -12,6 +12,9 @@ export class Banner {
   title: string;
 
   @Prop({ default: '' })
+  highlightTitle: string;
+
+  @Prop({ default: '' })
   subtitle: string;
 
   @Prop({ default: '' })
