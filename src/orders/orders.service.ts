@@ -45,7 +45,17 @@ export class OrdersService {
       const product = pId ? await this.productModel.findOne({ id: pId }).exec() : null;
 
       const itemQty = Number(item.qty) || 1;
-      const itemPrice = product ? product.price : (Number(item.price) || 0);
+      let itemPrice = product ? product.price : (Number(item.price) || 0);
+
+      // Check for size-specific variant price
+      let matchedVariant: any = null;
+      if (product && Array.isArray(product.sizeVariants) && product.sizeVariants.length > 0) {
+        matchedVariant = product.sizeVariants.find((v) => v.size === item.size);
+        if (matchedVariant && matchedVariant.price) {
+          itemPrice = matchedVariant.price;
+        }
+      }
+
       const itemName = product ? product.name : (item.name || item.product?.name || 'Festive Outfit');
       const itemImage = product && product.images && product.images.length > 0
         ? product.images[0]
@@ -63,6 +73,14 @@ export class OrdersService {
       });
 
       if (product) {
+        // If matched size variant exists, check and deduct variant stock
+        if (matchedVariant) {
+          if (matchedVariant.isAvailable === false || matchedVariant.stock < itemQty) {
+            throw new BadRequestException(`Sorry, size "${item.size}" of "${product.name}" is out of stock.`);
+          }
+          matchedVariant.stock = Math.max(0, matchedVariant.stock - itemQty);
+        }
+
         if (product.stock < itemQty) {
           throw new BadRequestException(`Sorry, "${product.name}" is currently out of stock (Available: ${product.stock} units).`);
         }
@@ -78,7 +96,7 @@ export class OrdersService {
           adjustment: -itemQty,
           newStock,
           type: StockAdjustmentType.SALE,
-          reason: 'Customer Order Placement',
+          reason: `Customer Order Placement (${item.size || 'Default'})`,
         }).save();
       }
     }

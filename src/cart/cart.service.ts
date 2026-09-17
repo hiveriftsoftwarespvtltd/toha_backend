@@ -179,7 +179,16 @@ export class CartService {
 
     const validItems = populatedItems.filter((i) => i.product !== null);
 
-    const subtotal = validItems.reduce((sum, item) => sum + item.product.price * item.qty, 0);
+    const subtotal = validItems.reduce((sum, item) => {
+      let unitPrice = item.product.price;
+      if (Array.isArray(item.product.sizeVariants) && item.product.sizeVariants.length > 0) {
+        const matched = item.product.sizeVariants.find((v: any) => v.size === item.size);
+        if (matched && matched.price) {
+          unitPrice = matched.price;
+        }
+      }
+      return sum + unitPrice * item.qty;
+    }, 0);
 
     const dType = cart.discountType || 'PERCENTAGE';
     const dVal = cart.discountValue || cart.discountPercent || 0;

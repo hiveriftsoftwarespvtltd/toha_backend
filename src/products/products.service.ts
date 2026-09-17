@@ -130,15 +130,44 @@ export class ProductsService {
     const customId = createProductDto.id || createProductDto.sku || `th-${Date.now().toString().slice(-4)}`;
     const slug = (createProductDto.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
 
+    const sizeVariants = Array.isArray(createProductDto.sizeVariants) && createProductDto.sizeVariants.length > 0
+      ? createProductDto.sizeVariants
+      : [];
+
+    let sizes = createProductDto.sizes && createProductDto.sizes.length > 0
+      ? createProductDto.sizes
+      : (sizeVariants.length > 0 ? sizeVariants.map((v) => v.size) : ['0-2Y', '2-4Y', '4-6Y', '6-8Y']);
+
+    let price = createProductDto.price;
+    let mrp = createProductDto.mrp;
+    let stock = createProductDto.stock;
+
+    if (sizeVariants.length > 0) {
+      // Derive starting price from variants if not set or 0
+      const variantPrices = sizeVariants.map((v) => Number(v.price)).filter((p) => !isNaN(p) && p > 0);
+      if (!price && variantPrices.length > 0) {
+        price = Math.min(...variantPrices);
+      }
+      const variantMrps = sizeVariants.map((v) => Number(v.mrp)).filter((m) => !isNaN(m) && m > 0);
+      if (!mrp && variantMrps.length > 0) {
+        mrp = Math.min(...variantMrps);
+      }
+      const totalVariantStock = sizeVariants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+      if (stock === undefined || stock === null) {
+        stock = totalVariantStock;
+      }
+    }
+
     const newProduct = new this.productModel({
       id: customId,
       slug,
       ageRange: createProductDto.ageRange || '0-8',
-      sizes: createProductDto.sizes && createProductDto.sizes.length > 0 ? createProductDto.sizes : ['0-2Y', '2-4Y', '4-6Y', '6-8Y'],
+      sizes,
+      sizeVariants,
       colors: createProductDto.colors && createProductDto.colors.length > 0 ? createProductDto.colors : [{ name: 'Multicolor', hex: '#FF0066' }],
-      stock: createProductDto.stock ?? 10,
-      price: createProductDto.price ?? 999,
-      mrp: createProductDto.mrp ?? 1499,
+      stock: stock ?? 10,
+      price: price ?? 999,
+      mrp: mrp ?? 1499,
       images: createProductDto.images && createProductDto.images.length > 0 ? createProductDto.images : ['https://images.unsplash.com/photo-1596870230751-ebdfce98ec42?auto=format&fit=crop&w=800&q=80'],
       rating: 4.8,
       reviewsCount: 1,
@@ -150,7 +179,22 @@ export class ProductsService {
   }
 
   async update(id: string, updateFields: Partial<CreateProductDto>) {
-    const product = await this.productModel.findOneAndUpdate({ id }, updateFields, { new: true }).exec();
+    const fieldsToUpdate: any = { ...updateFields };
+
+    if (Array.isArray(updateFields.sizeVariants) && updateFields.sizeVariants.length > 0) {
+      const sizeVariants = updateFields.sizeVariants;
+      fieldsToUpdate.sizes = Array.from(new Set([
+        ...(updateFields.sizes || []),
+        ...sizeVariants.map((v) => v.size),
+      ]));
+
+      const variantPrices = sizeVariants.map((v) => Number(v.price)).filter((p) => !isNaN(p) && p > 0);
+      if ((!fieldsToUpdate.price || fieldsToUpdate.price === 0) && variantPrices.length > 0) {
+        fieldsToUpdate.price = Math.min(...variantPrices);
+      }
+    }
+
+    const product = await this.productModel.findOneAndUpdate({ id }, fieldsToUpdate, { new: true }).exec();
     if (!product) {
       throw new NotFoundException(`Product #${id} not found`);
     }

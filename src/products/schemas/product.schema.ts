@@ -14,6 +14,26 @@ export class ProductColor {
 
 const ProductColorSchema = SchemaFactory.createForClass(ProductColor);
 
+@Schema({ _id: false })
+export class SizeVariant {
+  @Prop({ required: true })
+  size: string; // e.g. "6-12m", "1-2 Y", "4-5 Y"
+
+  @Prop({ required: true, type: Number })
+  price: number; // Selling price for this size
+
+  @Prop({ type: Number })
+  mrp: number; // MRP for this size
+
+  @Prop({ default: 10, type: Number })
+  stock: number; // Stock units for this size
+
+  @Prop({ default: true })
+  isAvailable: boolean; // Availability flag (Y/N)
+}
+
+const SizeVariantSchema = SchemaFactory.createForClass(SizeVariant);
+
 @Schema({ timestamps: true })
 export class Product {
   @Prop({ required: true, unique: true, index: true })
@@ -42,6 +62,9 @@ export class Product {
 
   @Prop({ type: [String], default: [] })
   sizes: string[];
+
+  @Prop({ type: [SizeVariantSchema], default: [] })
+  sizeVariants: SizeVariant[];
 
   @Prop({ type: [ProductColorSchema], default: [] })
   colors: ProductColor[];

@@ -47,6 +47,20 @@ export class CreateProductDto {
   @IsOptional()
   sizes?: string[];
 
+  @ApiProperty({
+    example: [{ size: '6-12m', price: 1300, mrp: 1600, stock: 5, isAvailable: true }],
+    required: false,
+  })
+  @IsArray()
+  @IsOptional()
+  sizeVariants?: {
+    size: string;
+    price: number;
+    mrp?: number;
+    stock?: number;
+    isAvailable?: boolean;
+  }[];
+
   @ApiProperty({ example: [{ name: 'Orange', hex: '#F97316' }], required: false })
   @IsArray()
   @IsOptional()
