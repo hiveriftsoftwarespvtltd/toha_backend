@@ -48,10 +48,13 @@ export class UploadsController {
     if (this.cloudinaryService.isEnabled) {
       try {
         const res: any = await this.cloudinaryService.uploadFile(file, 'tohay_kids');
-        const cUrl = res?.secure_url || res?.url;
+        let cUrl = res?.secure_url || res?.url;
+        if (cUrl && cUrl.includes('res.cloudinary.com') && cUrl.includes('/image/upload/') && !cUrl.includes('f_auto')) {
+          cUrl = cUrl.replace('/image/upload/', '/image/upload/f_auto,q_auto/');
+        }
         return {
           success: true,
-          message: 'Image uploaded to Cloudinary successfully',
+          message: 'Image uploaded successfully',
           data: {
             url: cUrl,
             public_id: res?.public_id,
@@ -60,7 +63,7 @@ export class UploadsController {
           },
         };
       } catch (err: any) {
-        throw new BadRequestException(`Cloudinary upload failed: ${err?.message || err}`);
+        throw new BadRequestException(`Image upload failed: ${err?.message || err}`);
       }
     }
 

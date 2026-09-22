@@ -53,6 +53,9 @@ export class Banner {
   @Prop({ default: '' })
   mobileImage: string;
 
+  @Prop({ default: '' })
+  mobileImageUrl: string;
+
   @Prop({ default: '/collections' })
   link: string;
 
