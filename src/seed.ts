@@ -1328,10 +1328,7 @@ const seedBrands = [
   { id: 'br-3', code: 'br-3', name: 'Festive Blooms', logo: 'https://via.placeholder.com/150', isActive: true },
 ];
 
-const seedCoupons = [
-  { code: 'WELCOME10', type: CouponType.PERCENTAGE, value: 10, minOrderAmount: 999, maxDiscount: 500, isActive: true },
-  { code: 'FESTIVE500', type: CouponType.FIXED, value: 500, minOrderAmount: 2499, isActive: true },
-];
+const seedCoupons: any[] = [];
 
 const seedBanners = [
   {

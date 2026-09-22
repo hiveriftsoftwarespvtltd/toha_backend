@@ -109,32 +109,17 @@ export class CartService {
       isActive: true,
     }).exec();
 
-    if (coupon) {
-      const isFixed = coupon.type === CouponType.FIXED || coupon.type === ('FIXED' as any) || (coupon as any).discountType === 'Fixed Amount';
-      const dType = isFixed ? 'FIXED' : 'PERCENTAGE';
-      return this.setCartCoupon(userId, coupon.code, dType, coupon.value);
+    if (!coupon) {
+      throw new BadRequestException('Invalid or expired coupon code');
     }
 
-    // 2. Built-in promotional coupon codes
-    const builtInCoupons: Record<string, { type: string; value: number }> = {
-      TOHAY10: { type: 'PERCENTAGE', value: 10 },
-      WELCOME10: { type: 'PERCENTAGE', value: 10 },
-      FESTIVE15: { type: 'PERCENTAGE', value: 15 },
-      EXTRA5: { type: 'PERCENTAGE', value: 5 },
-      TOHAY20: { type: 'PERCENTAGE', value: 20 },
-      FIRST10: { type: 'PERCENTAGE', value: 10 },
-      SAVE10: { type: 'PERCENTAGE', value: 10 },
-      SAVE100: { type: 'FIXED', value: 100 },
-      SAIF100: { type: 'FIXED', value: 100 },
-    };
-
-    if (builtInCoupons[cleanCode]) {
-      const c = builtInCoupons[cleanCode];
-      return this.setCartCoupon(userId, cleanCode, c.type, c.value);
+    if (coupon.expiryDate && new Date(coupon.expiryDate) < new Date()) {
+      throw new BadRequestException('This coupon code has expired');
     }
 
-    // 3. Fallback for custom entered promo code (10% discount)
-    return this.setCartCoupon(userId, cleanCode, 'PERCENTAGE', 10);
+    const isFixed = coupon.type === CouponType.FIXED || coupon.type === ('FIXED' as any) || (coupon as any).discountType === 'Fixed Amount';
+    const dType = isFixed ? 'FIXED' : 'PERCENTAGE';
+    return this.setCartCoupon(userId, coupon.code, dType, coupon.value);
   }
 
   private async setCartCoupon(userId: string, code: string, discountType: string, discountValue: number) {

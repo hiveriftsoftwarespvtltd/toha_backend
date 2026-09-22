@@ -50,7 +50,7 @@ export class CreateOrderDto {
   @IsOptional()
   totalAmount?: number;
 
-  @ApiProperty({ example: 'TOHAY10', required: false })
+  @ApiProperty({ example: 'SUMMER20', required: false })
   @IsString()
   @IsOptional()
   couponCode?: string;

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Coupon, CouponDocument } from './schemas/coupon.schema';
+import { CouponType } from '../common/enums';
 
 @Injectable()
 export class CouponsService {
@@ -103,22 +104,28 @@ export class CouponsService {
     const coupon = await this.couponModel.findOne({ code: cleanCode, isActive: true }).exec();
 
     if (!coupon) {
-      if (cleanCode === 'TOHAY10') {
-        return { valid: true, code: 'TOHAY10', value: 10, message: '10% Festive Discount applied!' };
-      }
       throw new BadRequestException('Invalid or expired coupon code');
+    }
+
+    if (coupon.expiryDate && new Date(coupon.expiryDate) < new Date()) {
+      throw new BadRequestException('This coupon code has expired');
     }
 
     if (cartTotal < coupon.minimumOrderValue) {
       throw new BadRequestException(`Minimum cart total of ₹${coupon.minimumOrderValue} required for this coupon`);
     }
 
+    const isFixed = coupon.type === CouponType.FIXED || (coupon as any).type === 'FIXED';
+    const typeStr = isFixed ? 'FIXED' : 'PERCENTAGE';
+    const msg = isFixed ? `₹${coupon.value} Discount applied!` : `${coupon.value}% Discount applied!`;
+
     return {
       valid: true,
       code: coupon.code,
       value: coupon.value,
-      type: coupon.type,
-      message: `${coupon.value}% Discount applied!`,
+      type: typeStr,
+      maxDiscount: coupon.maximumDiscount,
+      message: msg,
     };
   }
 }
