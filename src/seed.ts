@@ -1331,7 +1331,6 @@ const seedBrands = [
 const seedCoupons = [
   { code: 'WELCOME10', type: CouponType.PERCENTAGE, value: 10, minOrderAmount: 999, maxDiscount: 500, isActive: true },
   { code: 'FESTIVE500', type: CouponType.FIXED, value: 500, minOrderAmount: 2499, isActive: true },
-  { code: 'PREPAIDS', type: CouponType.PERCENTAGE, value: 5, minOrderAmount: 499, maxDiscount: 300, isActive: true }
 ];
 
 const seedBanners = [
@@ -1410,8 +1409,8 @@ const seedBanners = [
   {
     id: 'ban-3',
     title: 'A Little Extra for Their Big Day',
-    subtitle: 'Get 5% OFF on prepaid orders',
-    btnSecondaryText: 'PREPAIDS',
+    subtitle: 'Special Collection',
+    btnSecondaryText: '',
     description: '05:12:34',
     link: '/sale',
     image: 'https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=800&q=80',

@@ -103,9 +103,6 @@ export class CouponsService {
     const coupon = await this.couponModel.findOne({ code: cleanCode, isActive: true }).exec();
 
     if (!coupon) {
-      if (cleanCode === 'PREPAIDS') {
-        return { valid: true, code: 'PREPAIDS', value: 5, message: '5% Extra Prepaid Discount applied!' };
-      }
       if (cleanCode === 'TOHAY10') {
         return { valid: true, code: 'TOHAY10', value: 10, message: '10% Festive Discount applied!' };
       }

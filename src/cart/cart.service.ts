@@ -117,7 +117,6 @@ export class CartService {
 
     // 2. Built-in promotional coupon codes
     const builtInCoupons: Record<string, { type: string; value: number }> = {
-      PREPAIDS: { type: 'PERCENTAGE', value: 5 },
       TOHAY10: { type: 'PERCENTAGE', value: 10 },
       WELCOME10: { type: 'PERCENTAGE', value: 10 },
       FESTIVE15: { type: 'PERCENTAGE', value: 15 },
