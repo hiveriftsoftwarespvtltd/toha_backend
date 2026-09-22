@@ -20,7 +20,7 @@ export class StoreSettings {
   @Prop({ default: 'INR' })
   currencyCode: string;
 
-  @Prop({ default: 'Plot 42, Textile Hub, Sector 62, Noida, UP 201301' })
+  @Prop({ default: '' })
   address: string;
 
   @Prop({ default: 1499, type: Number })
