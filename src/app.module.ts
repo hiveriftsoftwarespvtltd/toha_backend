@@ -21,6 +21,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { UploadsModule } from './uploads/uploads.module';
+import { GenderCardsModule } from './gender-cards/gender-cards.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { UploadsModule } from './uploads/uploads.module';
     ReportsModule,
     SettingsModule,
     UploadsModule,
+    GenderCardsModule,
   ],
 })
 export class AppModule { }
