@@ -58,7 +58,7 @@ export class PaymentsService {
     };
   }
 
-  async verifySignature(data: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string; orderId: string }) {
+  async verifySignature(data: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string; orderId?: string }) {
     const secret = this.configService.get<string>('RAZORPAY_KEY_SECRET') || 'tohay_kids_secret';
     const generatedSignature = crypto
       .createHmac('sha256', secret)
@@ -71,27 +71,29 @@ export class PaymentsService {
       throw new BadRequestException('Invalid Razorpay signature validation');
     }
 
-    const order = await this.orderModel.findOne({ id: data.orderId }).exec();
-    if (order) {
-      order.paymentStatus = PaymentStatus.PAID;
-      order.razorpayOrderId = data.razorpay_order_id;
-      order.razorpayPaymentId = data.razorpay_payment_id;
-      await order.save();
+    if (data.orderId) {
+      const order = await this.orderModel.findOne({ id: data.orderId }).exec();
+      if (order) {
+        order.paymentStatus = PaymentStatus.PAID;
+        order.razorpayOrderId = data.razorpay_order_id;
+        order.razorpayPaymentId = data.razorpay_payment_id;
+        await order.save();
 
-      const txnId = `TXN-${Math.floor(10000 + Math.random() * 90000)}`;
-      const payment = new this.paymentModel({
-        txnId,
-        orderId: order.id,
-        customerName: order.customerName,
-        amount: order.totalAmount,
-        method: 'Razorpay Online',
-        status: PaymentStatus.PAID,
-        gatewayTxnId: data.razorpay_payment_id,
-      });
-      await payment.save();
+        const txnId = `TXN-${Math.floor(10000 + Math.random() * 90000)}`;
+        const payment = new this.paymentModel({
+          txnId,
+          orderId: order.id,
+          customerName: order.customerName,
+          amount: order.totalAmount,
+          method: 'Razorpay Online',
+          status: PaymentStatus.PAID,
+          gatewayTxnId: data.razorpay_payment_id,
+        });
+        await payment.save();
+      }
     }
 
-    return { valid: true, orderId: data.orderId };
+    return { valid: true, orderId: data.orderId || null, paymentId: data.razorpay_payment_id };
   }
 
   async findAllAdminPayments() {

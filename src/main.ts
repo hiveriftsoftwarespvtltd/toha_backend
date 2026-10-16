@@ -55,37 +55,13 @@ async function bootstrap() {
     ]),
   );
 
-  // CORS Setup (Allows tohay.in, api.tohay.in, and all configured origins)
+  // Comprehensive CORS Setup - permits all frontend origins with full credentials & headers support
   app.enableCors({
-    origin: (origin, callback) => {
-      // Allow server-to-server, mobile apps, or tools without origin header
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      // Check explicit array whitelist
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      // Allow any subdomain of tohay.in, buxaa.in, or localhost ports
-      const isAllowedDomain =
-        /^https?:\/\/([a-zA-Z0-9-]+\.)*tohay\.in(:\d+)?$/.test(origin) ||
-        /^https?:\/\/([a-zA-Z0-9-]+\.)*buxaa\.in(:\d+)?$/.test(origin) ||
-        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-
-      if (isAllowedDomain) {
-        return callback(null, true);
-      }
-
-      // Fallback: allow origin gracefully to avoid breaking frontend clients
-      logger.log(`Allowed CORS origin via fallback: ${origin}`);
-      return callback(null, true);
-    },
+    origin: true,
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders:
-      'Content-Type,Accept,Authorization,X-Requested-With,Origin,Access-Control-Request-Method,Access-Control-Request-Headers,Cache-Control,Pragma',
+    allowedHeaders: '*',
+    exposedHeaders: '*',
     optionsSuccessStatus: 204,
   });
 

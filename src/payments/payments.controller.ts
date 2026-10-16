@@ -12,8 +12,6 @@ export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
   @Post('create-order')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
   @ApiOperation({ summary: 'Create Razorpay payment order token' })
   async createRazorpayOrder(@Body() body: { amount: number; receipt: string }) {
     const data = await this.paymentsService.createRazorpayOrder(body.amount, body.receipt);
@@ -21,11 +19,9 @@ export class PaymentsController {
   }
 
   @Post('verify')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
   @ApiOperation({ summary: 'Verify Razorpay payment signature' })
   async verifyPayment(
-    @Body() body: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string; orderId: string },
+    @Body() body: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string; orderId?: string },
   ) {
     const data = await this.paymentsService.verifySignature(body);
     return { success: true, message: 'Payment verified successfully!', data };

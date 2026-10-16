@@ -15,6 +15,8 @@ export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Post('orders')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Customer: Place new order (COD or Razorpay)' })
   async createOrder(@CurrentUser() user: UserDocument, @Body() createOrderDto: CreateOrderDto) {
     const userId = user ? user._id.toString() : null;
