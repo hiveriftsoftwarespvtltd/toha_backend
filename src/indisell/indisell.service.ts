@@ -232,13 +232,8 @@ export class IndiSellService {
 
   private async executeHealth() {
     return {
-      status: 'healthy',
-      store: 'Tohay Kids Festive Wear',
-      version: '1.0.0',
       currency: 'INR',
-      methods: ['online', 'cod'],
-      capabilities: ['health', 'quote', 'prepare', 'complete', 'status', 'release'],
-      timestamp: new Date().toISOString(),
+      capabilities: ['quote', 'prepare', 'complete', 'status', 'release'],
     };
   }
 
@@ -308,8 +303,8 @@ export class IndiSellService {
       });
     }
 
-    const freeShippingThresholdMinor = 999 * 100;
-    const shippingMinor = subtotalMinor >= freeShippingThresholdMinor || subtotalMinor === 0 ? 0 : 50 * 100;
+    const freeShippingThresholdMinor = 1499 * 100;
+    const shippingMinor = subtotalMinor >= freeShippingThresholdMinor || subtotalMinor === 0 ? 0 : 99 * 100;
 
     let discountMinor = 0;
     if (data.couponCode) {

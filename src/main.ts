@@ -29,7 +29,7 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
 
-  const port = configService.get<number>('PORT') || 5000;
+  const port = configService.get<number>('PORT') || 7010;
   const frontendUrl = configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
 
   // Global Prefix
