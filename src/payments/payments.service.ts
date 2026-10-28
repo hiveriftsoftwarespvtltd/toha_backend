@@ -44,7 +44,7 @@ export class PaymentsService {
           key: keyId,
         };
       } catch (err) {
-        // Fallback simulation if razorpay fails
+        console.warn('Razorpay order creation failed (likely invalid or expired credentials):', err?.message || err);
       }
     }
 
@@ -55,6 +55,8 @@ export class PaymentsService {
       amount: amountInPaisa,
       currency: 'INR',
       key: keyId,
+      isMock: true,
+      authFailed: true,
     };
   }
 

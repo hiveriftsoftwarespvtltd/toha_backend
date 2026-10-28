@@ -22,6 +22,7 @@ import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { GenderCardsModule } from './gender-cards/gender-cards.module';
+import { IndiSellModule } from './indisell/indisell.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { GenderCardsModule } from './gender-cards/gender-cards.module';
     SettingsModule,
     UploadsModule,
     GenderCardsModule,
+    IndiSellModule,
   ],
 })
 export class AppModule { }

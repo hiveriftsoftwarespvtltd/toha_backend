@@ -12,8 +12,24 @@ export interface Response<T> {
 @Injectable()
 export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> {
   intercept(context: ExecutionContext, next: CallHandler): Observable<Response<T>> {
+    const req = context.switchToHttp().getRequest();
+    const url = req?.url || '';
+
+    // Bypass transformation for IndiSell connector & storefront checkout bridge to strictly adhere to IndiSell SDK contract
+    if (
+      url.includes('/indisell') ||
+      url.includes('/checkout/session') ||
+      url.includes('/checkout/verify')
+    ) {
+      return next.handle();
+    }
+
     return next.handle().pipe(
       map((res) => {
+        if (res && typeof res === 'object' && ('ok' in res || 'checkoutSessionId' in res)) {
+          return res;
+        }
+
         if (res && typeof res === 'object' && 'success' in res && 'data' in res) {
           return res;
         }

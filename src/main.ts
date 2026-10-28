@@ -16,8 +16,15 @@ async function bootstrap() {
   // Trust reverse proxy headers (Cloudflare, Nginx, Apache) for https://api.tohay.in
   app.set('trust proxy', true);
 
-  // Increase JSON payload limit for product images & base64 uploads
-  app.use(json({ limit: '50mb' }));
+  // Increase JSON payload limit for product images & base64 uploads, and preserve rawBody for webhook/signature verification
+  app.use(
+    json({
+      limit: '50mb',
+      verify: (req: any, res: any, buf: Buffer) => {
+        req.rawBody = buf.toString('utf-8');
+      },
+    }),
+  );
   app.use(urlencoded({ extended: true, limit: '50mb' }));
 
   const configService = app.get(ConfigService);

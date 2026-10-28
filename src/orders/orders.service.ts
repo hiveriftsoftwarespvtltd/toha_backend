@@ -41,11 +41,16 @@ export class OrdersService {
     let subtotal = 0;
 
     for (const item of itemsToProcess) {
-      const pId = item.productId || item.product?.id || item.id;
-      const product = pId ? await this.productModel.findOne({ id: pId }).exec() : null;
+      const pId = item.productId || item.product?.id || item.product?._id || item.id;
+      let product = pId ? await this.productModel.findOne({ id: pId }).exec() : null;
+      if (!product && pId) {
+        try {
+          product = await this.productModel.findById(pId).exec();
+        } catch (_) {}
+      }
 
       const itemQty = Number(item.qty) || 1;
-      let itemPrice = product ? product.price : (Number(item.price) || 0);
+      let itemPrice = product ? product.price : (Number(item.price) || Number(item.product?.price) || 0);
 
       // Check for size-specific variant price
       let matchedVariant: any = null;
@@ -59,12 +64,12 @@ export class OrdersService {
       const itemName = product ? product.name : (item.name || item.product?.name || 'Festive Outfit');
       const itemImage = product && product.images && product.images.length > 0
         ? product.images[0]
-        : (item.image || item.product?.images?.[0] || '');
+        : (item.image || item.product?.images?.[0] || item.product?.image || '');
 
       subtotal += itemPrice * itemQty;
 
       orderItems.push({
-        productId: pId || 'P1001',
+        productId: product?.id || pId || 'P1001',
         name: itemName,
         price: itemPrice,
         qty: itemQty,
