@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
   ConflictException,
   NotFoundException,
+  InternalServerErrorException,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -285,43 +286,57 @@ export class IndiSellService implements OnModuleInit {
         if (memCart && Array.isArray(memCart.items) && memCart.items.length > 0) {
           itemsToProcess = memCart.items;
         } else {
-          // 2. Check standard Cart collection
-          const foundCart = Types.ObjectId.isValid(cartId)
-            ? await this.cartModel.findOne({ $or: [{ _id: cartId }, { user: cartId }] }).populate('items.product').exec()
-            : null;
-          if (foundCart && Array.isArray(foundCart.items)) {
-            itemsToProcess = foundCart.items;
+          // 2. Check persisted cart record in payments collection
+          const dbCart = await this.paymentModel.findOne({ txnId: `cart_${cartId}` }).exec();
+          if (dbCart && dbCart.customerName) {
+            let payload: any = null;
+            try {
+              payload = JSON.parse(dbCart.customerName);
+            } catch (_) {
+              payload = { ownerId: dbCart.customerName, items: [] };
+            }
+            if (Array.isArray(payload?.items) && payload.items.length > 0) {
+              itemsToProcess = payload.items;
+              this.memoryCarts.set(cartId, {
+                id: cartId,
+                version: dbCart.gatewayTxnId || 'v1',
+                ownerId: payload.ownerId,
+                requestId: dbCart.orderId,
+                items: payload.items,
+              });
+            }
+          }
+
+          // 3. Check standard Cart collection if cartId is user ObjectId
+          if (itemsToProcess.length === 0 && Types.ObjectId.isValid(cartId)) {
+            const foundCart = await this.cartModel.findOne({ $or: [{ _id: cartId }, { user: cartId }] }).populate('items.product').exec();
+            if (foundCart && Array.isArray(foundCart.items) && foundCart.items.length > 0) {
+              itemsToProcess = foundCart.items;
+            }
           }
         }
-      } catch (err) { }
+      } catch (err) {
+        this.logger.warn(`executeQuote cart lookup warning for ${cartId}: ${err.message}`);
+      }
     }
 
     if (itemsToProcess.length === 0) {
-      return {
-        quoteId: `qt_${Date.now().toString(36)}`,
-        cartId,
-        cartVersion,
-        currency: 'INR',
-        method,
-        expiresAt: Date.now() + 5 * 60 * 1000,
-        items: [],
-        subtotalMinor: 0,
-        discountMinor: 0,
-        shippingMinor: 0,
-        taxMinor: 0,
-        codFeeMinor: 0,
-        totalMinor: 0,
-        codAvailable: true,
-      };
+      this.logger.error(`executeQuote rejected: no items found for cartId=${cartId}`);
+      throw new BadRequestException('invalid_cart');
     }
 
     let subtotalMinor = 0;
     const quoteItems: any[] = [];
 
     for (const item of itemsToProcess) {
-      const pId = item.productId || item.product?.id || item.id || item.variantId;
+      const pId = item.productId || item.product?.id || item.product?._id || item.id || item.variantId;
       const product = pId
-        ? await this.productModel.findOne({ $or: [{ id: pId }, { _id: Types.ObjectId.isValid(pId) ? pId : null }] }).exec()
+        ? await this.productModel.findOne({
+            $or: [
+              { id: String(pId) },
+              { _id: Types.ObjectId.isValid(pId) ? new Types.ObjectId(pId) : null },
+            ].filter((c) => Object.values(c)[0] !== null),
+          }).exec()
         : null;
 
       const qty = Math.max(1, Number(item.qty || item.quantity || 1));
@@ -335,11 +350,12 @@ export class IndiSellService implements OnModuleInit {
         }
       }
 
-      const unitPriceMinor = Math.round(itemPrice * 100);
+      // Ensure price is at least 1 INR (100 paise)
+      const unitPriceMinor = Math.max(100, Math.round(Number(itemPrice || 1) * 100));
       subtotalMinor += unitPriceMinor * qty;
 
       quoteItems.push({
-        variantId: `${pId}_${itemSize}`,
+        variantId: `${pId || 'TK1001'}_${itemSize}`,
         title: product ? `${product.name} (${itemSize})` : item.name || 'Festive Kids Outfit',
         quantity: qty,
         unitPriceMinor,
@@ -347,7 +363,7 @@ export class IndiSellService implements OnModuleInit {
     }
 
     const freeShippingThresholdMinor = 1499 * 100;
-    const shippingMinor = subtotalMinor >= freeShippingThresholdMinor || subtotalMinor === 0 ? 0 : 99 * 100;
+    const shippingMinor = subtotalMinor >= freeShippingThresholdMinor ? 0 : 99 * 100;
 
     let discountMinor = 0;
     if (data.couponCode) {
@@ -356,7 +372,7 @@ export class IndiSellService implements OnModuleInit {
 
     const taxMinor = 0;
     const codFeeMinor = 0;
-    const totalMinor = Math.max(0, subtotalMinor - discountMinor + shippingMinor + taxMinor + codFeeMinor);
+    const totalMinor = Math.max(100, subtotalMinor - discountMinor + shippingMinor + taxMinor + codFeeMinor);
 
     const quoteId = `qt_${createHash('sha256').update(cartId + cartVersion + subtotalMinor).digest('hex').slice(0, 16)}`;
 
@@ -628,7 +644,7 @@ export class IndiSellService implements OnModuleInit {
   async loadOwnedCart(customerId: string, cartId: string): Promise<BridgeOwnedCart | null> {
     // 1. Check in-memory cart cache
     const memCart = this.memoryCarts.get(cartId);
-    if (memCart && memCart.ownerId === customerId) {
+    if (memCart && memCart.ownerId === customerId && Array.isArray(memCart.items) && memCart.items.length > 0) {
       return {
         id: memCart.id,
         version: memCart.version || 'v1',
@@ -640,77 +656,64 @@ export class IndiSellService implements OnModuleInit {
     // 2. Check in payments collection (using existing collection)
     try {
       const dbCart = await this.paymentModel.findOne({ txnId: `cart_${cartId}` }).exec();
-      if (dbCart && dbCart.customerName === customerId) {
-        return {
-          id: cartId,
-          version: dbCart.gatewayTxnId || 'v1',
-          ownerId: customerId,
-          requestId: dbCart.orderId,
-        };
-      }
-    } catch (_) { }
+      if (dbCart && dbCart.customerName) {
+        let payload: any = null;
+        try {
+          payload = JSON.parse(dbCart.customerName);
+        } catch (_) {
+          payload = { ownerId: dbCart.customerName, items: [] };
+        }
 
-    // 3. Check in standard Cart collection for logged-in user
+        if (payload.ownerId === customerId && Array.isArray(payload.items) && payload.items.length > 0) {
+          this.memoryCarts.set(cartId, {
+            id: cartId,
+            version: dbCart.gatewayTxnId || 'v1',
+            ownerId: customerId,
+            requestId: dbCart.orderId,
+            items: payload.items,
+            subtotal: dbCart.amount,
+          });
+
+          return {
+            id: cartId,
+            version: dbCart.gatewayTxnId || 'v1',
+            ownerId: customerId,
+            requestId: dbCart.orderId,
+          };
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`loadOwnedCart DB lookup error for cart_${cartId}: ${err.message}`);
+    }
+
+    // 3. Check standard Cart collection for logged-in user
     if (Types.ObjectId.isValid(customerId)) {
-      const userCart = await this.cartModel.findOne({ user: customerId }).exec();
-      if (userCart) {
-        const version = String((userCart as any).updatedAt ? (userCart as any).updatedAt.getTime() : '1');
-        const requestId = `cart_req_${userCart._id}_${version}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
-
-        this.memoryCarts.set(cartId, {
-          id: cartId,
-          version,
-          ownerId: customerId,
-          requestId,
-          items: userCart.items,
-        });
-
-        return {
-          id: cartId,
-          version,
-          ownerId: customerId,
-          requestId,
-        };
-      }
-    }
-
-    // 4. For guest checkout carts: create / ensure owned cart record
-    if (cartId && customerId) {
-      const version = 'v1';
-      const requestId = `cart_req_${customerId.replace(/[^A-Za-z0-9_-]/g, '_')}_${Date.now().toString(36)}`.slice(0, 64);
-      
-      this.memoryCarts.set(cartId, {
-        id: cartId,
-        version,
-        ownerId: customerId,
-        requestId,
-        items: [],
-      });
-
       try {
-        await this.paymentModel.findOneAndUpdate(
-          { txnId: `cart_${cartId}` },
-          {
-            txnId: `cart_${cartId}`,
-            orderId: requestId,
-            customerName: customerId,
-            amount: 0,
-            method: 'indisell_cart',
-            status: PaymentStatus.PENDING,
-            gatewayTxnId: version,
-          },
-          { upsert: true, new: true },
-        );
-      } catch (_) { }
+        const userCart = await this.cartModel.findOne({ user: customerId }).populate('items.product').exec();
+        if (userCart && Array.isArray(userCart.items) && userCart.items.length > 0) {
+          const version = String((userCart as any).updatedAt ? (userCart as any).updatedAt.getTime() : '1');
+          const requestId = `req_usercart_${userCart._id}_${version}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
 
-      return {
-        id: cartId,
-        version,
-        ownerId: customerId,
-        requestId,
-      };
+          this.memoryCarts.set(cartId, {
+            id: cartId,
+            version,
+            ownerId: customerId,
+            requestId,
+            items: userCart.items,
+          });
+
+          return {
+            id: cartId,
+            version,
+            ownerId: customerId,
+            requestId,
+          };
+        }
+      } catch (_) { }
     }
 
+    // If cart was not found or does not belong to customerId or has 0 items: return null!
+    // Never fabricate a synthetic empty cart.
     return null;
   }
 
@@ -774,15 +777,29 @@ export class IndiSellService implements OnModuleInit {
 
   async syncOwnedCart(customerId: string, cartId: string, items: any[], subtotal?: number) {
     const version = 'v1';
-    const requestId = `cart_req_${cartId.replace(/[^A-Za-z0-9_-]/g, '_')}_${Date.now().toString(36)}`.slice(0, 64);
+    const requestId = `req_cart_${cartId.replace(/[^A-Za-z0-9_-]/g, '_')}_${Date.now().toString(36)}`.slice(0, 64);
+
+    const sanitizedItems = items.map((i) => ({
+      productId: String(i.productId || i.product?.id || i.product?._id || i.id || i.variantId || 'TK1001'),
+      name: String(i.name || i.title || i.product?.name || 'Festive Kids Outfit'),
+      size: String(i.size || 'Standard'),
+      qty: Math.max(1, Number(i.qty || i.quantity || 1)),
+      price: Math.max(0, Number(i.price || i.unitPrice || 0)),
+    }));
+
+    const cartPayload = {
+      ownerId: customerId,
+      items: sanitizedItems,
+      subtotal: Number(subtotal || 0),
+    };
 
     this.memoryCarts.set(cartId, {
       id: cartId,
       ownerId: customerId,
       version,
       requestId,
-      items: items || [],
-      subtotal: subtotal || 0,
+      items: sanitizedItems,
+      subtotal: Number(subtotal || 0),
     });
 
     try {
@@ -791,16 +808,19 @@ export class IndiSellService implements OnModuleInit {
         {
           txnId: `cart_${cartId}`,
           orderId: requestId,
-          customerName: customerId,
-          amount: subtotal || 0,
+          customerName: JSON.stringify(cartPayload),
+          amount: Number(subtotal || 0),
           method: 'indisell_cart',
           status: PaymentStatus.PENDING,
           gatewayTxnId: version,
         },
         { upsert: true, new: true },
       );
-    } catch (_) { }
+    } catch (saveErr) {
+      this.logger.error(`Failed to persist cart_${cartId} in payments collection: ${saveErr.message}`);
+      throw new InternalServerErrorException('cart_save_failed');
+    }
 
-    return { ok: true, cartId, customerId };
+    return { ok: true, cartId, customerId, version };
   }
 }

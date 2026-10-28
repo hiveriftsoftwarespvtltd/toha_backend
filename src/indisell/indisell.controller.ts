@@ -7,10 +7,13 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  UnauthorizedException,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { IndiSellService } from './indisell.service';
+import { expressToWebRequest } from './checkout-bridge';
 
 @ApiTags('IndiSell 1-Click Checkout')
 @Controller()
@@ -53,19 +56,24 @@ export class IndiSellController {
   }
 
   /**
-   * Helper endpoint: Sync cart items to backend before opening checkout
+   * Helper endpoint: Authenticated Cart Sync to database before checkout session
    */
   @Post('checkout/sync-cart')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Storefront: Sync cart to backend before opening checkout' })
+  @ApiOperation({ summary: 'Storefront: Authenticated Cart Sync' })
   async syncCart(
-    @Body() body: { customerId: string; cartId: string; items: any[]; subtotal?: number },
+    @Req() req: Request,
+    @Body() body: { cartId: string; items: any[]; subtotal?: number },
   ) {
-    if (!body || !body.cartId) {
-      return { ok: false, error: 'cartId_required' };
+    const webReq = expressToWebRequest(req);
+    const customer = await this.indisellService.authenticateCustomer(webReq);
+    if (!customer || !customer.id) {
+      throw new UnauthorizedException('customer_session_required');
     }
-    const customerId = body.customerId || `guest_${body.cartId}`;
-    await this.indisellService.syncOwnedCart(customerId, body.cartId, body.items || [], body.subtotal);
-    return { ok: true, cartId: body.cartId, customerId };
+    if (!body || !body.cartId || !Array.isArray(body.items) || body.items.length === 0) {
+      throw new BadRequestException('invalid_cart');
+    }
+    const result = await this.indisellService.syncOwnedCart(customer.id, body.cartId, body.items, body.subtotal);
+    return { ok: true, cartId: body.cartId, cartVersion: result.version };
   }
 }

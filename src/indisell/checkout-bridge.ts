@@ -136,23 +136,30 @@ function isOriginAllowed(reqOrigin: string | null, storefrontOrigin: string): bo
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      let parsedErr: any = null;
+      try { parsedErr = JSON.parse(errText); } catch (_) {}
+      const sanitizedCode = parsedErr?.error || parsedErr?.code || (res.status === 403 ? 'custom_checkout_disabled' : 'upstream_error');
+      console.error(`[IndiSell Safe Diagnostic] stage=upstream path=${path} status=${res.status} code=${sanitizedCode}`);
       fail(res.status === 403 ? 403 : 503, 'indisell_checkout_unavailable');
     }
     return res.json();
   }
 
-  function route(fn: (req: Request) => Promise<any>) {
+  function route(stage: string, fn: (req: Request) => Promise<any>) {
     return async (req: Request) => {
       try {
         return Response.json(await fn(req), {
           headers: { 'Cache-Control': 'no-store' },
         });
       } catch (e: any) {
-        console.error('Checkout bridge error:', e?.message || e);
+        const status = e?.[BRIDGE_ERROR] ? e.status : 503;
+        const code = e?.[BRIDGE_ERROR] ? e.publicCode : 'checkout_bridge_unavailable';
+        console.error(`[IndiSell Safe Diagnostic] stage=${stage} status=${status} code=${code}`);
         return Response.json(
-          { error: e?.[BRIDGE_ERROR] ? e.publicCode : 'checkout_bridge_unavailable' },
+          { error: code },
           {
-            status: e?.[BRIDGE_ERROR] ? e.status : 503,
+            status,
             headers: { 'Cache-Control': 'no-store' },
           },
         );
@@ -161,7 +168,7 @@ function isOriginAllowed(reqOrigin: string | null, storefrontOrigin: string): bo
   }
 
   return {
-    session: route(async (req: Request) => {
+    session: route('session_create', async (req: Request) => {
       const customer = await authenticated(req);
       const input = await body(req, ['cartId', 'cartVersion']);
       if (typeof input.cartId !== 'string' || typeof input.cartVersion !== 'string') {
@@ -218,7 +225,7 @@ function isOriginAllowed(reqOrigin: string | null, storefrontOrigin: string): bo
       }
       return { checkoutSessionId: session.checkoutSessionId, checkoutUrl: url.href };
     }),
-    verify: route(async (req: Request) => {
+    verify: route('session_verify', async (req: Request) => {
       const customer = await authenticated(req);
       const input = await body(req, ['checkoutSessionId']);
       const token = input.checkoutSessionId;
@@ -271,11 +278,7 @@ function isOriginAllowed(reqOrigin: string | null, storefrontOrigin: string): bo
   };
 }
 
-export async function handleWebRouteWithExpress(
-  webHandler: (req: Request) => Promise<Response>,
-  expressReq: any,
-  expressRes: any,
-) {
+export function expressToWebRequest(expressReq: any): Request {
   const protocol = expressReq.headers['x-forwarded-proto'] || expressReq.protocol || 'https';
   const host = expressReq.headers['x-forwarded-host'] || expressReq.headers['host'] || 'tohay.in';
   const url = `${protocol}://${host}${expressReq.originalUrl || expressReq.url}`;
@@ -309,14 +312,21 @@ export async function handleWebRouteWithExpress(
     headers.set('content-length', String(bodyBuffer?.length || 0));
   }
 
-  const webReq = new Request(url, {
+  return new Request(url, {
     method: expressReq.method,
     headers,
     body: bodyBuffer,
     // @ts-ignore
     duplex: 'half',
   });
+}
 
+export async function handleWebRouteWithExpress(
+  webHandler: (req: Request) => Promise<Response>,
+  expressReq: any,
+  expressRes: any,
+) {
+  const webReq = expressToWebRequest(expressReq);
   const webRes = await webHandler(webReq);
 
   expressRes.status(webRes.status);
