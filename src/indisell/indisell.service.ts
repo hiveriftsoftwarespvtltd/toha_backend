@@ -5,18 +5,20 @@ import {
   UnauthorizedException,
   ConflictException,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { createHmac, createHash, timingSafeEqual } from 'crypto';
+import * as jwt from 'jsonwebtoken';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
 import { Order, OrderDocument } from '../orders/schemas/order.schema';
 import { Cart, CartDocument } from '../cart/schemas/cart.schema';
 import { Product, ProductDocument } from '../products/schemas/product.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { InventoryAdjustment, InventoryAdjustmentDocument } from '../inventory/schemas/inventory-adjustment.schema';
-import { OrderStatus, PaymentStatus, StockAdjustmentType } from '../common/enums';
+import { OrderStatus, PaymentStatus } from '../common/enums';
 import {
   ConnectorRequest,
   ConnectorResponse,
@@ -26,18 +28,34 @@ import {
   CompleteRequest,
   BoundOrder,
 } from './interfaces/indisell.interfaces';
+import {
+  createCheckoutBridge,
+  handleWebRouteWithExpress,
+  BridgeCustomer,
+  BridgeOwnedCart,
+  BridgeSessionBinding,
+} from './checkout-bridge';
 
 @Injectable()
-export class IndiSellService {
+export class IndiSellService implements OnModuleInit {
   private readonly logger = new Logger(IndiSellService.name);
   private readonly merchantKey: string;
   private readonly connectorSecret: string;
   private readonly checkoutOrigin: string;
   private readonly storefrontOrigin: string;
 
-  // In-memory caching for lightning fast idempotency and session lookup
+  private bridge: ReturnType<typeof createCheckoutBridge>;
+
+  // In-memory caching for lightning fast lookup + persistent storage in existing collections
   private readonly memoryIdempotency = new Map<string, { payloadHash: string; response: any }>();
-  private readonly memorySessions = new Map<string, { customerId: string; cartId: string; cartVersion: string; checkoutSessionId: string; status: string; orderId?: string }>();
+  private readonly memorySessions = new Map<
+    string,
+    { customerId: string; cartId: string; cartVersion: string; checkoutSessionId: string; status: string; orderId?: string }
+  >();
+  private readonly memoryCarts = new Map<
+    string,
+    { id: string; version: string; ownerId: string; requestId: string; items: any[]; subtotal?: number }
+  >();
 
   constructor(
     private readonly configService: ConfigService,
@@ -54,18 +72,32 @@ export class IndiSellService {
     @InjectModel(InventoryAdjustment.name)
     private readonly inventoryModel: Model<InventoryAdjustmentDocument>,
   ) {
-    this.merchantKey = this.configService.get<string>('INDISELL_MERCHANT_KEY') || 'mk_tohay_kids';
+    this.merchantKey = this.configService.get<string>('INDISELL_MERCHANT_KEY') || 'mk_64f88bba76bab9d17f26b11f';
     this.connectorSecret =
       this.configService.get<string>('INDISELL_CONNECTOR_SECRET') ||
       'c70e5639b61bc9697652242139e76dd8fb498e10';
     this.checkoutOrigin =
-      this.configService.get<string>('INDISELL_CHECKOUT_ORIGIN') || 'https://checkout.indisell.com';
+      this.configService.get<string>('INDISELL_CHECKOUT_ORIGIN') || 'https://cart.indisell.io';
     this.storefrontOrigin =
       this.configService.get<string>('INDISELL_STOREFRONT_ORIGIN') || 'https://tohay.in';
   }
 
+  onModuleInit() {
+    this.bridge = createCheckoutBridge({
+      checkoutOrigin: this.checkoutOrigin,
+      storefrontOrigin: this.storefrontOrigin,
+      merchantKey: this.merchantKey,
+      connectorSecret: this.connectorSecret,
+      authenticateCustomer: this.authenticateCustomer.bind(this),
+      loadOwnedCart: this.loadOwnedCart.bind(this),
+      rememberSession: this.rememberSession.bind(this),
+      ownsSession: this.ownsSession.bind(this),
+    });
+    this.logger.log('IndiSell createCheckoutBridge initialized successfully');
+  }
+
   // =========================================================================
-  // 1. SIGNATURE VERIFICATION
+  // 1. SIGNATURE VERIFICATION (Signed Server-to-Server Connector)
   // =========================================================================
   verifyConnectorSignature(rawBody: string, headers: Record<string, any>) {
     const key = headers['x-indisell-merchant-key'];
@@ -103,7 +135,7 @@ export class IndiSellService {
   }
 
   // =========================================================================
-  // 2. IDEMPOTENCY HANDLER
+  // 2. IDEMPOTENCY HANDLER (DB-backed + In-memory)
   // =========================================================================
   async withIdempotency<T>(
     action: string,
@@ -114,7 +146,7 @@ export class IndiSellService {
     const payloadHash = createHash('sha256').update(rawBody).digest('hex');
     const key = `${this.merchantKey}:${action}:${requestId}`;
 
-    // 1. Check in-memory first
+    // 1. In-memory check
     const cached = this.memoryIdempotency.get(key);
     if (cached) {
       if (cached.payloadHash !== payloadHash) {
@@ -123,7 +155,7 @@ export class IndiSellService {
       return cached.response as T;
     }
 
-    // 2. Check in payments collection
+    // 2. Persisted check in payments collection
     try {
       const existing = await this.paymentModel.findOne({ txnId: `idem_${key}` }).exec();
       if (existing) {
@@ -134,7 +166,9 @@ export class IndiSellService {
         this.memoryIdempotency.set(key, { payloadHash, response: resp });
         return resp as T;
       }
-    } catch (err) { }
+    } catch (err) {
+      this.logger.warn(`Idempotency lookup warning: ${err.message}`);
+    }
 
     const result = await operation();
 
@@ -162,7 +196,7 @@ export class IndiSellService {
   }
 
   // =========================================================================
-  // 3. MAIN CONNECTOR DISPATCHER
+  // 3. MAIN CONNECTOR DISPATCHER (/api/indisell/connector)
   // =========================================================================
   async handleConnector(rawBody: string, headers: Record<string, any>): Promise<ConnectorResponse> {
     this.verifyConnectorSignature(rawBody, headers);
@@ -246,11 +280,18 @@ export class IndiSellService {
 
     if (itemsToProcess.length === 0 && cartId) {
       try {
-        const foundCart = Types.ObjectId.isValid(cartId)
-          ? await this.cartModel.findOne({ $or: [{ _id: cartId }, { user: cartId }] }).populate('items.product').exec()
-          : null;
-        if (foundCart && Array.isArray(foundCart.items)) {
-          itemsToProcess = foundCart.items;
+        // 1. Check in-memory cart cache
+        const memCart = this.memoryCarts.get(cartId);
+        if (memCart && Array.isArray(memCart.items) && memCart.items.length > 0) {
+          itemsToProcess = memCart.items;
+        } else {
+          // 2. Check standard Cart collection
+          const foundCart = Types.ObjectId.isValid(cartId)
+            ? await this.cartModel.findOne({ $or: [{ _id: cartId }, { user: cartId }] }).populate('items.product').exec()
+            : null;
+          if (foundCart && Array.isArray(foundCart.items)) {
+            itemsToProcess = foundCart.items;
+          }
         }
       } catch (err) { }
     }
@@ -279,7 +320,9 @@ export class IndiSellService {
 
     for (const item of itemsToProcess) {
       const pId = item.productId || item.product?.id || item.id || item.variantId;
-      const product = pId ? await this.productModel.findOne({ $or: [{ id: pId }, { _id: Types.ObjectId.isValid(pId) ? pId : null }] }).exec() : null;
+      const product = pId
+        ? await this.productModel.findOne({ $or: [{ id: pId }, { _id: Types.ObjectId.isValid(pId) ? pId : null }] }).exec()
+        : null;
 
       const qty = Math.max(1, Number(item.qty || item.quantity || 1));
       let itemPrice = product ? product.price : Number(item.price || item.unitPrice || 0);
@@ -338,9 +381,11 @@ export class IndiSellService {
   private async executePrepare(data: PrepareRequest, requestId: string): Promise<BoundOrder> {
     const { cartId, cartVersion, quoteId, attemptId, phone, address, method } = data;
 
-    const existing = await this.orderModel.findOne({
-      $or: [{ razorpayOrderId: attemptId }, { id: attemptId }],
-    }).exec();
+    const existing = await this.orderModel
+      .findOne({
+        $or: [{ razorpayOrderId: attemptId }, { id: attemptId }],
+      })
+      .exec();
 
     if (existing) {
       return {
@@ -439,9 +484,11 @@ export class IndiSellService {
   private async executeComplete(data: CompleteRequest): Promise<BoundOrder> {
     const { orderId, attemptId, quoteId, method, amountMinor, paymentRef, providerOrderId } = data;
 
-    const order = await this.orderModel.findOne({
-      $or: [{ id: orderId }, { razorpayOrderId: attemptId }],
-    }).exec();
+    const order = await this.orderModel
+      .findOne({
+        $or: [{ id: orderId }, { razorpayOrderId: attemptId }],
+      })
+      .exec();
 
     if (!order) {
       this.logger.error(`Order not found for completion: orderId=${orderId}, attemptId=${attemptId}`);
@@ -484,9 +531,11 @@ export class IndiSellService {
 
   private async executeStatus(data: any) {
     const { orderId, attemptId } = data;
-    const order = await this.orderModel.findOne({
-      $or: [{ id: orderId }, { razorpayOrderId: attemptId }],
-    }).exec();
+    const order = await this.orderModel
+      .findOne({
+        $or: [{ id: orderId }, { razorpayOrderId: attemptId }],
+      })
+      .exec();
 
     if (!order) {
       return { status: 'unknown', orderId: null };
@@ -503,9 +552,11 @@ export class IndiSellService {
 
   private async executeRelease(data: any) {
     const { orderId, attemptId } = data;
-    const order = await this.orderModel.findOne({
-      $or: [{ id: orderId }, { razorpayOrderId: attemptId }],
-    }).exec();
+    const order = await this.orderModel
+      .findOne({
+        $or: [{ id: orderId }, { razorpayOrderId: attemptId }],
+      })
+      .exec();
 
     if (!order) {
       return { released: false, reason: 'order_not_found' };
@@ -529,134 +580,227 @@ export class IndiSellService {
   }
 
   // =========================================================================
-  // 5. CUSTOMER SESSION BRIDGE (/api/checkout/session & /api/checkout/verify)
+  // 5. OFFICIAL INDISELL CHECKOUT BRIDGE CALLBACKS
   // =========================================================================
 
-  async createCheckoutSession(userId: string | null, cartId: string, cartVersion: string) {
-    const customerId = userId || `guest_${cartId || Date.now().toString(36)}`;
-    const safeCartId = cartId || customerId;
-    const safeCartVersion = cartVersion || 'v1';
-    const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
-
-    const rawPayload = JSON.stringify({
-      requestId,
-      cartId: safeCartId,
-      cartVersion: safeCartVersion,
-    });
-
-    const timestamp = String(Math.floor(Date.now() / 1000));
-    const signature = createHmac('sha256', this.connectorSecret)
-      .update(`custom-session-create-v1.${this.merchantKey}.${timestamp}.${rawPayload}`)
-      .digest('hex');
-
-    let sessionRes: any = null;
-    try {
-      const response = await fetch(`${this.checkoutOrigin}/api/custom/v1/create`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-IndiSell-Merchant-Key': this.merchantKey,
-          'X-IndiSell-Timestamp': timestamp,
-          'X-IndiSell-Signature': signature,
-        },
-        body: rawPayload,
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upstream IndiSell responded with status ${response.status}`);
+  async authenticateCustomer(req: Request): Promise<BridgeCustomer | null> {
+    // 1. Check Authorization: Bearer <token>
+    const authHeader = req.headers.get('authorization') || '';
+    if (authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7).trim();
+      if (token) {
+        if (token.startsWith('guest_')) {
+          const guestId = token.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 128);
+          if (guestId) return { id: guestId };
+        }
+        try {
+          const secret = this.configService.get<string>('JWT_SECRET') || 'lokeshkumar';
+          const decoded: any = jwt.verify(token, secret);
+          const userId = decoded?.userId || decoded?.id || decoded?.sub || decoded?._id;
+          if (userId && typeof userId === 'string') {
+            return { id: userId.slice(0, 128) };
+          }
+        } catch (_) {
+          // Token invalid or expired
+        }
       }
-      sessionRes = await response.json();
-    } catch (upstreamErr) {
-      this.logger.log(`IndiSell remote host not live yet — created local checkout session for testing`);
-      const fallbackSessionId = `session_${createHash('sha256').update(requestId + safeCartId).digest('hex').slice(0, 43)}`;
-      const isPlaceholder =
-        !this.checkoutOrigin ||
-        this.checkoutOrigin.includes('checkout.indisell.com') ||
-        this.checkoutOrigin.includes('APPROVED-CHECKOUT.example') ||
-        this.checkoutOrigin.includes('localhost');
+    }
 
-      const checkoutUrl = isPlaceholder
-        ? `/indisell-checkout?mk=${this.merchantKey}#${fallbackSessionId}`
-        : `${this.checkoutOrigin}/custom-checkout?mk=${this.merchantKey}#${fallbackSessionId}`;
+    // 2. Check Cookie session
+    const cookieHeader = req.headers.get('cookie') || '';
+    if (cookieHeader) {
+      const match = cookieHeader.match(/(?:tohay_guest_id|tohay_session|guest_id|sessionId)=([^;]+)/);
+      if (match && match[1]) {
+        const guestId = decodeURIComponent(match[1].trim()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 128);
+        if (guestId) return { id: guestId };
+      }
+    }
 
-      sessionRes = {
-        checkoutSessionId: fallbackSessionId,
-        checkoutUrl,
+    // 3. Check custom header (for testing / integrations)
+    const testHeader = req.headers.get('x-customer-id') || req.headers.get('x-test-customer-id');
+    if (testHeader && typeof testHeader === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(testHeader)) {
+      return { id: testHeader };
+    }
+
+    return null;
+  }
+
+  async loadOwnedCart(customerId: string, cartId: string): Promise<BridgeOwnedCart | null> {
+    // 1. Check in-memory cart cache
+    const memCart = this.memoryCarts.get(cartId);
+    if (memCart && memCart.ownerId === customerId) {
+      return {
+        id: memCart.id,
+        version: memCart.version || 'v1',
+        ownerId: memCart.ownerId,
+        requestId: memCart.requestId,
       };
     }
 
-    const sessionHash = createHash('sha256').update(sessionRes.checkoutSessionId).digest('hex');
+    // 2. Check in payments collection (using existing collection)
+    try {
+      const dbCart = await this.paymentModel.findOne({ txnId: `cart_${cartId}` }).exec();
+      if (dbCart && dbCart.customerName === customerId) {
+        return {
+          id: cartId,
+          version: dbCart.gatewayTxnId || 'v1',
+          ownerId: customerId,
+          requestId: dbCart.orderId,
+        };
+      }
+    } catch (_) { }
 
-    this.memorySessions.set(sessionHash, {
-      customerId,
-      cartId: safeCartId,
-      cartVersion: safeCartVersion,
-      checkoutSessionId: sessionRes.checkoutSessionId,
-      status: 'created',
+    // 3. Check in standard Cart collection for logged-in user
+    if (Types.ObjectId.isValid(customerId)) {
+      const userCart = await this.cartModel.findOne({ user: customerId }).exec();
+      if (userCart) {
+        const version = String((userCart as any).updatedAt ? (userCart as any).updatedAt.getTime() : '1');
+        const requestId = `cart_req_${userCart._id}_${version}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+
+        this.memoryCarts.set(cartId, {
+          id: cartId,
+          version,
+          ownerId: customerId,
+          requestId,
+          items: userCart.items,
+        });
+
+        return {
+          id: cartId,
+          version,
+          ownerId: customerId,
+          requestId,
+        };
+      }
+    }
+
+    // 4. For guest checkout carts: create / ensure owned cart record
+    if (cartId && customerId) {
+      const version = 'v1';
+      const requestId = `cart_req_${customerId.replace(/[^A-Za-z0-9_-]/g, '_')}_${Date.now().toString(36)}`.slice(0, 64);
+      
+      this.memoryCarts.set(cartId, {
+        id: cartId,
+        version,
+        ownerId: customerId,
+        requestId,
+        items: [],
+      });
+
+      try {
+        await this.paymentModel.findOneAndUpdate(
+          { txnId: `cart_${cartId}` },
+          {
+            txnId: `cart_${cartId}`,
+            orderId: requestId,
+            customerName: customerId,
+            amount: 0,
+            method: 'indisell_cart',
+            status: PaymentStatus.PENDING,
+            gatewayTxnId: version,
+          },
+          { upsert: true, new: true },
+        );
+      } catch (_) { }
+
+      return {
+        id: cartId,
+        version,
+        ownerId: customerId,
+        requestId,
+      };
+    }
+
+    return null;
+  }
+
+  async rememberSession(binding: BridgeSessionBinding): Promise<boolean> {
+    try {
+      this.memorySessions.set(binding.sessionHash, {
+        customerId: binding.customerId,
+        cartId: binding.cartId,
+        cartVersion: binding.cartVersion,
+        checkoutSessionId: '',
+        status: 'created',
+      });
+
+      await this.paymentModel.findOneAndUpdate(
+        { txnId: `sess_${binding.sessionHash}` },
+        {
+          txnId: `sess_${binding.sessionHash}`,
+          orderId: binding.cartId,
+          customerName: binding.customerId,
+          amount: 0,
+          method: 'indisell_session',
+          status: PaymentStatus.PENDING,
+          gatewayTxnId: binding.cartVersion,
+        },
+        { upsert: true, new: true },
+      );
+      return true;
+    } catch (err) {
+      this.logger.error(`Failed to remember session: ${err.message}`);
+      return false;
+    }
+  }
+
+  async ownsSession(customerId: string, sessionHash: string): Promise<boolean> {
+    const cached = this.memorySessions.get(sessionHash);
+    if (cached && cached.customerId === customerId) {
+      return true;
+    }
+
+    try {
+      const session = await this.paymentModel.findOne({ txnId: `sess_${sessionHash}` }).exec();
+      if (session && session.customerName === customerId) {
+        return true;
+      }
+    } catch (_) { }
+
+    return false;
+  }
+
+  // =========================================================================
+  // 6. STOREFRONT BRIDGE ROUTE HANDLERS (/api/checkout/session & verify)
+  // =========================================================================
+
+  async handleSessionBridge(req: any, res: any) {
+    return handleWebRouteWithExpress(this.bridge.session, req, res);
+  }
+
+  async handleVerifyBridge(req: any, res: any) {
+    return handleWebRouteWithExpress(this.bridge.verify, req, res);
+  }
+
+  async syncOwnedCart(customerId: string, cartId: string, items: any[], subtotal?: number) {
+    const version = 'v1';
+    const requestId = `cart_req_${cartId.replace(/[^A-Za-z0-9_-]/g, '_')}_${Date.now().toString(36)}`.slice(0, 64);
+
+    this.memoryCarts.set(cartId, {
+      id: cartId,
+      ownerId: customerId,
+      version,
+      requestId,
+      items: items || [],
+      subtotal: subtotal || 0,
     });
 
     try {
       await this.paymentModel.findOneAndUpdate(
-        { txnId: `sess_${sessionHash}` },
+        { txnId: `cart_${cartId}` },
         {
-          txnId: `sess_${sessionHash}`,
-          orderId: sessionRes.checkoutSessionId,
+          txnId: `cart_${cartId}`,
+          orderId: requestId,
           customerName: customerId,
-          amount: 0,
-          method: 'indisell_session',
+          amount: subtotal || 0,
+          method: 'indisell_cart',
           status: PaymentStatus.PENDING,
-          gatewayTxnId: safeCartId,
+          gatewayTxnId: version,
         },
         { upsert: true, new: true },
       );
-    } catch (saveErr) {
-      this.logger.warn(`Failed to store session in payments collection: ${saveErr.message}`);
-    }
+    } catch (_) { }
 
-    return {
-      checkoutSessionId: sessionRes.checkoutSessionId,
-      checkoutUrl: sessionRes.checkoutUrl,
-    };
-  }
-
-  async verifyCheckoutSession(userId: string | null, checkoutSessionId: string) {
-    const sessionHash = createHash('sha256').update(checkoutSessionId).digest('hex');
-    const cached = this.memorySessions.get(sessionHash);
-
-    let status = cached?.status === 'completed' ? 'confirmed' : 'pending';
-    let orderId = cached?.orderId || null;
-
-    try {
-      const response = await fetch(`${this.checkoutOrigin}/api/custom/v1/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${checkoutSessionId}`,
-        },
-        body: '{}',
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (response.ok) {
-        const upstreamData = await response.json();
-        if (upstreamData.status === 'confirmed') {
-          status = 'confirmed';
-          orderId = upstreamData.orderId || orderId;
-          if (cached) {
-            cached.status = 'completed';
-            cached.orderId = orderId;
-          }
-        }
-      }
-    } catch (err) {
-      this.logger.debug(`Upstream status check fallback: ${err.message}`);
-    }
-
-    return {
-      checkoutSessionId,
-      status,
-      orderId,
-    };
+    return { ok: true, cartId, customerId };
   }
 }

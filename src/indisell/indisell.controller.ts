@@ -2,14 +2,14 @@ import {
   Controller,
   Post,
   Req,
-  Body,
+  Res,
   Headers,
+  Body,
   HttpCode,
   HttpStatus,
-  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { IndiSellService } from './indisell.service';
 
 @ApiTags('IndiSell 1-Click Checkout')
@@ -34,31 +34,38 @@ export class IndiSellController {
 
   /**
    * Storefront bridge: Create session
-   * Invoked by widget-custom.js on frontend
+   * Invoked by widget-custom.js on frontend (POST /api/checkout/session)
    */
   @Post('checkout/session')
-  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Storefront: Create IndiSell 1-click checkout session' })
-  async createSession(
-    @Req() req: any,
-    @Body() body: { cartId: string; cartVersion?: string },
-  ) {
-    const userId = req.user ? (req.user._id || req.user.id)?.toString() : null;
-    return this.indisellService.createCheckoutSession(userId, body.cartId, body.cartVersion || 'v1');
+  async createSession(@Req() req: Request, @Res() res: Response) {
+    return this.indisellService.handleSessionBridge(req, res);
   }
 
   /**
    * Storefront bridge: Verify session completion
-   * Invoked by widget-custom.js upon completion
+   * Invoked by widget-custom.js upon completion (POST /api/checkout/verify)
    */
   @Post('checkout/verify')
-  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Storefront: Verify IndiSell checkout completion' })
-  async verifySession(
-    @Req() req: any,
-    @Body() body: { checkoutSessionId: string },
+  async verifySession(@Req() req: Request, @Res() res: Response) {
+    return this.indisellService.handleVerifyBridge(req, res);
+  }
+
+  /**
+   * Helper endpoint: Sync cart items to backend before opening checkout
+   */
+  @Post('checkout/sync-cart')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Storefront: Sync cart to backend before opening checkout' })
+  async syncCart(
+    @Body() body: { customerId: string; cartId: string; items: any[]; subtotal?: number },
   ) {
-    const userId = req.user ? (req.user._id || req.user.id)?.toString() : null;
-    return this.indisellService.verifyCheckoutSession(userId, body.checkoutSessionId);
+    if (!body || !body.cartId) {
+      return { ok: false, error: 'cartId_required' };
+    }
+    const customerId = body.customerId || `guest_${body.cartId}`;
+    await this.indisellService.syncOwnedCart(customerId, body.cartId, body.items || [], body.subtotal);
+    return { ok: true, cartId: body.cartId, customerId };
   }
 }
