@@ -271,8 +271,8 @@ export class IndiSellService implements OnModuleInit {
   private async executeHealth() {
     return {
       currency: 'INR',
-      capabilities: ['quote', 'prepare', 'complete', 'status', 'release', 'checkout'],
-      features: ['shipping', 'dashboard_pricing'],
+      capabilities: ['health', 'quote', 'prepare', 'complete', 'status', 'release', 'checkout'],
+      features: ['shipping', 'dashboard_pricing', 'metadata'],
       pricingContract: 'indisell-v1',
     };
   }
@@ -312,9 +312,11 @@ export class IndiSellService implements OnModuleInit {
             }
           }
 
-          // 3. Check standard Cart collection if cartId is user ObjectId
-          if (itemsToProcess.length === 0 && Types.ObjectId.isValid(cartId)) {
-            const foundCart = await this.cartModel.findOne({ $or: [{ _id: cartId }, { user: cartId }] }).populate('items.product').exec();
+          // 3. Check standard Cart collection if cartId is user ObjectId or contains u_<id>
+          const cartUserId = cartId?.match(/u_([0-9a-fA-F]{24})/)?.[1];
+          const candidateId = cartUserId || (Types.ObjectId.isValid(cartId) ? cartId : null);
+          if (itemsToProcess.length === 0 && candidateId) {
+            const foundCart = await this.cartModel.findOne({ $or: [{ _id: candidateId }, { user: candidateId }] }).populate('items.product').exec();
             if (foundCart && Array.isArray(foundCart.items) && foundCart.items.length > 0) {
               itemsToProcess = foundCart.items;
             }
@@ -413,6 +415,9 @@ export class IndiSellService implements OnModuleInit {
     if (isDashboardPricing) {
       quoteResult.pricingBase = 'catalog-v1';
     }
+    if ((data as any)?.selection) {
+      quoteResult.selection = (data as any).selection;
+    }
 
     this.memoryQuotes.set(quoteId, quoteResult);
     try {
@@ -446,6 +451,7 @@ export class IndiSellService implements OnModuleInit {
 
     if (existing) {
       const existingHash = (existing as any).pricingHash;
+      const existingSelection = (existing as any).selection || data.selection;
       return {
         orderId: existing.id,
         name: existing.id,
@@ -456,12 +462,14 @@ export class IndiSellService implements OnModuleInit {
         method,
         financialStatus: 'pending',
         ...(existingHash ? { pricingHash: existingHash } : {}),
+        ...(existingSelection ? { selection: existingSelection } : {}),
       };
     }
 
     let pricedTotalMinor: number;
     let pricedHash: string | undefined;
 
+    let quoteItems: any[] = [];
     if (pricingQuote) {
       let base = this.memoryQuotes.get(quoteId);
       if (!base) {
@@ -484,19 +492,61 @@ export class IndiSellService implements OnModuleInit {
         } as any);
       }
 
+      if (base && Array.isArray(base.items)) {
+        quoteItems = base.items;
+      }
+
       const priced = acceptDashboardPricing(base, data);
       pricedTotalMinor = priced.totalMinor;
       pricedHash = priced.pricing?.hash;
     } else {
-      const quote = await this.executeQuote({
-        cartId,
-        cartVersion,
-        method,
-        phone,
-        address,
-        items: data.items,
-      });
+      let quote = this.memoryQuotes.get(quoteId);
+      if (!quote) {
+        try {
+          const stored = await this.paymentModel.findOne({ txnId: `quote_${quoteId}` }).exec();
+          if (stored && stored.customerName) {
+            quote = JSON.parse(stored.customerName);
+          }
+        } catch (_) {}
+      }
+      if (!quote) {
+        quote = await this.executeQuote({
+          cartId,
+          cartVersion,
+          method,
+          phone,
+          address,
+          items: data.items,
+        });
+      }
+      if (quote && Array.isArray(quote.items)) {
+        quoteItems = quote.items;
+      }
       pricedTotalMinor = quote.totalMinor;
+    }
+
+    // Synced cart fallback if quoteItems is still empty
+    let syncedOwnerId: string | null = null;
+    if (quoteItems.length === 0) {
+      const memCart = this.memoryCarts.get(cartId);
+      if (memCart) {
+        if (Array.isArray(memCart.items) && memCart.items.length > 0) {
+          quoteItems = memCart.items;
+        }
+        if (memCart.ownerId) syncedOwnerId = memCart.ownerId;
+      }
+      if (quoteItems.length === 0) {
+        try {
+          const dbCart = await this.paymentModel.findOne({ txnId: `cart_${cartId}` }).exec();
+          if (dbCart && dbCart.customerName) {
+            const parsed = JSON.parse(dbCart.customerName);
+            if (Array.isArray(parsed.items) && parsed.items.length > 0) {
+              quoteItems = parsed.items;
+            }
+            if (parsed.ownerId) syncedOwnerId = parsed.ownerId;
+          }
+        } catch (_) {}
+      }
     }
 
     const orderId = `TK${Math.floor(10000 + Math.random() * 90000)}`;
@@ -505,29 +555,75 @@ export class IndiSellService implements OnModuleInit {
     const discount = pricingQuote?.discountMinor ? pricingQuote.discountMinor / 100 : 0;
     const shipping = pricingQuote?.shippingMinor ? pricingQuote.shippingMinor / 100 : 0;
 
-    const orderItems = (data.items || []).map((item: any) => ({
+    const rawItems = (data.items && Array.isArray(data.items) && data.items.length > 0)
+      ? data.items
+      : quoteItems;
+
+    const orderItems = rawItems.map((item: any) => ({
       productId: item.productId || item.variantId?.split('_')[0] || 'TK1001',
       name: item.title || item.name || 'Festive Kids Outfit',
-      price: item.unitPriceMinor ? item.unitPriceMinor / 100 : item.price || 0,
-      qty: item.quantity || item.qty || 1,
+      price: item.unitPriceMinor ? item.unitPriceMinor / 100 : (Number(item.price) || 0),
+      qty: Math.max(1, Number(item.quantity || item.qty || 1)),
       size: item.variantTitle || item.variantId?.split('_')[1] || item.size || 'Standard',
       image: item.imageUrl || item.image || '',
     }));
 
     let userObj: any = null;
-    if (Types.ObjectId.isValid(cartId)) {
+
+    // 1. Extract embedded user ID from cartId (e.g. cart_u_6a95227ba2511330075ac179_... or direct ObjectId)
+    const cartUserMatch = cartId?.match(/u_([0-9a-fA-F]{24})/)?.[1];
+    if (cartUserMatch && Types.ObjectId.isValid(cartUserMatch)) {
+      userObj = await this.userModel.findById(cartUserMatch).exec();
+    }
+
+    // 2. Direct ObjectId check on cartId
+    if (!userObj && Types.ObjectId.isValid(cartId)) {
       userObj = await this.userModel.findById(cartId).exec();
     }
-    if (!userObj && phone) {
-      userObj = await this.userModel.findOne({ phone: { $regex: phone } }).exec();
+
+    // 3. Synced cart ownerId check
+    if (!userObj && syncedOwnerId && Types.ObjectId.isValid(syncedOwnerId)) {
+      userObj = await this.userModel.findById(syncedOwnerId).exec();
+    }
+
+    // 4. Clean 10-digit Phone match (handles +91, spaces, 0 prefixes safely)
+    const cleanPhone = phone ? String(phone).replace(/\D/g, '').slice(-10) : '';
+    if (!userObj && cleanPhone) {
+      userObj = await this.userModel.findOne({ phone: { $regex: cleanPhone } }).exec();
+    }
+
+    // 5. Email lookup from selection, address or incoming data
+    const selectionEmail = (data.selection?.email || '')?.trim().toLowerCase();
+    const emailToMatch = selectionEmail || (address?.email || data.email || data.customerEmail || '')?.trim().toLowerCase();
+    if (!userObj && emailToMatch) {
+      userObj = await this.userModel.findOne({ email: emailToMatch }).exec();
+    }
+
+    const orderNote = (data.selection?.note || '')?.trim();
+    const gstin = (data.selection?.gstin || '')?.trim();
+    const marketingConsent = Boolean(data.selection?.marketingConsent);
+    const billingAddress = data.selection?.billingAddress || null;
+
+    // 6. Auto-link verified OTP phone to user profile if user's phone was blank in DB
+    if (userObj && cleanPhone && !userObj.phone) {
+      try {
+        userObj.phone = cleanPhone;
+        await userObj.save();
+        this.logger.log(`Auto-saved verified phone ${cleanPhone} to user ${userObj.email}`);
+      } catch (_) {}
     }
 
     const newOrder = new this.orderModel({
       id: orderId,
       user: userObj ? userObj._id : new Types.ObjectId(),
       customerName: address?.name || userObj?.name || 'Customer',
-      customerEmail: userObj?.email || `customer_${phone || orderId}@tohay.in`,
-      customerPhone: phone || userObj?.phone || '',
+      customerEmail: selectionEmail || userObj?.email || emailToMatch || `customer_${cleanPhone || phone || orderId}@tohay.in`,
+      customerPhone: cleanPhone || phone || userObj?.phone || '',
+      notes: orderNote,
+      gstin: gstin,
+      marketingConsent: marketingConsent,
+      billingAddress: billingAddress,
+      selection: data.selection || null,
       items: orderItems,
       itemsCount: orderItems.reduce((acc: number, i: any) => acc + i.qty, 0),
       subtotal,
@@ -570,6 +666,7 @@ export class IndiSellService implements OnModuleInit {
       method,
       financialStatus: 'pending',
       ...(pricedHash ? { pricingHash: pricedHash } : {}),
+      ...(data.selection ? { selection: data.selection } : {}),
     };
   }
 
@@ -615,6 +712,7 @@ export class IndiSellService implements OnModuleInit {
       } catch (err) { }
     }
 
+    const storedSelection = (order as any).selection || data.selection;
     return {
       orderId: order.id,
       name: order.id,
@@ -625,6 +723,7 @@ export class IndiSellService implements OnModuleInit {
       method,
       financialStatus: isPaid ? 'paid' : 'pending',
       ...(storedHash || pricingHash ? { pricingHash: storedHash || pricingHash } : {}),
+      ...(storedSelection ? { selection: storedSelection } : {}),
     };
   }
 

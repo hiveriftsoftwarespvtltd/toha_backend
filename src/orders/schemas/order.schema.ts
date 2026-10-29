@@ -139,6 +139,21 @@ export class Order {
 
   @Prop({ default: '' })
   pricingHash: string;
+
+  @Prop({ default: '' })
+  notes: string;
+
+  @Prop({ default: '' })
+  gstin: string;
+
+  @Prop({ default: false })
+  marketingConsent: boolean;
+
+  @Prop({ type: Object, default: null })
+  billingAddress: any;
+
+  @Prop({ type: Object, default: null })
+  selection: any;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);

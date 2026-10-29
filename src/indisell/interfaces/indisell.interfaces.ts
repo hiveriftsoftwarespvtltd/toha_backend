@@ -32,6 +32,8 @@ export interface Quote {
   codFeeMinor: number;
   totalMinor: number;
   codAvailable: boolean;
+  pricingBase?: string;
+  selection?: any;
 }
 
 export interface QuoteRequest {
@@ -42,6 +44,7 @@ export interface QuoteRequest {
   address?: Address;
   items?: any[];
   couponCode?: string;
+  selection?: any;
 }
 
 export interface PrepareRequest {
@@ -53,6 +56,7 @@ export interface PrepareRequest {
   address: Address;
   method: Method;
   items?: any[];
+  selection?: any;
 }
 
 export interface BoundOrder {
@@ -64,6 +68,8 @@ export interface BoundOrder {
   currency: 'INR';
   method: Method;
   financialStatus: 'paid' | 'pending';
+  pricingHash?: string;
+  selection?: any;
 }
 
 export interface CompleteRequest {
