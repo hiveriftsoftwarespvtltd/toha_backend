@@ -36,6 +36,7 @@ import {
   BridgeOwnedCart,
   BridgeSessionBinding,
 } from './checkout-bridge';
+import { acceptDashboardPricing } from './dashboard-pricing';
 
 @Injectable()
 export class IndiSellService implements OnModuleInit {
@@ -57,6 +58,7 @@ export class IndiSellService implements OnModuleInit {
     string,
     { id: string; version: string; ownerId: string; requestId: string; items: any[]; subtotal?: number }
   >();
+  private readonly memoryQuotes = new Map<string, any>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -209,7 +211,7 @@ export class IndiSellService implements OnModuleInit {
       throw new BadRequestException('invalid_json');
     }
 
-    const ALLOWED_ACTIONS = new Set(['health', 'quote', 'prepare', 'complete', 'status', 'release']);
+    const ALLOWED_ACTIONS = new Set(['health', 'quote', 'prepare', 'complete', 'status', 'release', 'checkout']);
     if (
       !parsed ||
       typeof parsed !== 'object' ||
@@ -232,6 +234,7 @@ export class IndiSellService implements OnModuleInit {
       switch (action) {
         case 'health':
           return this.executeHealth();
+        case 'checkout':
         case 'quote':
           return this.executeQuote(data as QuoteRequest);
         case 'prepare':
@@ -268,7 +271,9 @@ export class IndiSellService implements OnModuleInit {
   private async executeHealth() {
     return {
       currency: 'INR',
-      capabilities: ['quote', 'prepare', 'complete', 'status', 'release'],
+      capabilities: ['quote', 'prepare', 'complete', 'status', 'release', 'checkout'],
+      features: ['shipping', 'dashboard_pricing'],
+      pricingContract: 'indisell-v1',
     };
   }
 
@@ -371,21 +376,24 @@ export class IndiSellService implements OnModuleInit {
       });
     }
 
+    const isDashboardPricing = (data as any)?.pricingContract === 'indisell-v1';
+
     const freeShippingThresholdMinor = 1499 * 100;
-    const shippingMinor = subtotalMinor >= freeShippingThresholdMinor ? 0 : 99 * 100;
+    const legacyShippingMinor = subtotalMinor >= freeShippingThresholdMinor ? 0 : 99 * 100;
 
     let discountMinor = 0;
     if (data.couponCode) {
       discountMinor = Math.round(subtotalMinor * 0.1);
     }
 
-    const taxMinor = 0;
+    const shippingMinor = isDashboardPricing ? 0 : legacyShippingMinor;
     const codFeeMinor = 0;
+    const taxMinor = 0;
     const totalMinor = Math.max(100, subtotalMinor - discountMinor + shippingMinor + taxMinor + codFeeMinor);
 
     const quoteId = `qt_${createHash('sha256').update(cartId + cartVersion + subtotalMinor).digest('hex').slice(0, 16)}`;
 
-    return {
+    const quoteResult: any = {
       quoteId,
       cartId,
       cartVersion,
@@ -401,10 +409,34 @@ export class IndiSellService implements OnModuleInit {
       totalMinor,
       codAvailable: true,
     };
+
+    if (isDashboardPricing) {
+      quoteResult.pricingBase = 'catalog-v1';
+    }
+
+    this.memoryQuotes.set(quoteId, quoteResult);
+    try {
+      await this.paymentModel.findOneAndUpdate(
+        { txnId: `quote_${quoteId}` },
+        {
+          txnId: `quote_${quoteId}`,
+          orderId: cartId,
+          customerName: JSON.stringify(quoteResult),
+          amount: totalMinor / 100,
+          method: 'indisell_quote',
+          status: PaymentStatus.PENDING,
+          gatewayTxnId: cartVersion,
+        },
+        { upsert: true, new: true },
+      );
+    } catch (_) {}
+
+    return quoteResult;
   }
 
-  private async executePrepare(data: PrepareRequest, requestId: string): Promise<BoundOrder> {
+  private async executePrepare(data: any, requestId: string): Promise<BoundOrder> {
     const { cartId, cartVersion, quoteId, attemptId, phone, address, method } = data;
+    const pricingQuote = data?.pricingQuote;
 
     const existing = await this.orderModel
       .findOne({
@@ -413,6 +445,7 @@ export class IndiSellService implements OnModuleInit {
       .exec();
 
     if (existing) {
+      const existingHash = (existing as any).pricingHash;
       return {
         orderId: existing.id,
         name: existing.id,
@@ -422,31 +455,63 @@ export class IndiSellService implements OnModuleInit {
         currency: 'INR',
         method,
         financialStatus: 'pending',
+        ...(existingHash ? { pricingHash: existingHash } : {}),
       };
     }
 
-    const quote = await this.executeQuote({
-      cartId,
-      cartVersion,
-      method,
-      phone,
-      address,
-      items: data.items,
-    });
+    let pricedTotalMinor: number;
+    let pricedHash: string | undefined;
+
+    if (pricingQuote) {
+      let base = this.memoryQuotes.get(quoteId);
+      if (!base) {
+        try {
+          const stored = await this.paymentModel.findOne({ txnId: `quote_${quoteId}` }).exec();
+          if (stored && stored.customerName) {
+            base = JSON.parse(stored.customerName);
+          }
+        } catch (_) {}
+      }
+      if (!base) {
+        base = await this.executeQuote({
+          cartId,
+          cartVersion,
+          method,
+          phone,
+          address,
+          items: data.items,
+          pricingContract: 'indisell-v1',
+        } as any);
+      }
+
+      const priced = acceptDashboardPricing(base, data);
+      pricedTotalMinor = priced.totalMinor;
+      pricedHash = priced.pricing?.hash;
+    } else {
+      const quote = await this.executeQuote({
+        cartId,
+        cartVersion,
+        method,
+        phone,
+        address,
+        items: data.items,
+      });
+      pricedTotalMinor = quote.totalMinor;
+    }
 
     const orderId = `TK${Math.floor(10000 + Math.random() * 90000)}`;
-    const totalAmount = quote.totalMinor / 100;
-    const subtotal = quote.subtotalMinor / 100;
-    const discount = quote.discountMinor / 100;
-    const shipping = quote.shippingMinor / 100;
+    const totalAmount = pricedTotalMinor / 100;
+    const subtotal = pricingQuote?.subtotalMinor ? pricingQuote.subtotalMinor / 100 : totalAmount;
+    const discount = pricingQuote?.discountMinor ? pricingQuote.discountMinor / 100 : 0;
+    const shipping = pricingQuote?.shippingMinor ? pricingQuote.shippingMinor / 100 : 0;
 
-    const orderItems = quote.items.map((item) => ({
-      productId: item.variantId.split('_')[0] || 'TK1001',
-      name: item.title,
-      price: item.unitPriceMinor / 100,
-      qty: item.quantity,
-      size: item.variantId.split('_')[1] || 'Standard',
-      image: '',
+    const orderItems = (data.items || []).map((item: any) => ({
+      productId: item.productId || item.variantId?.split('_')[0] || 'TK1001',
+      name: item.title || item.name || 'Festive Kids Outfit',
+      price: item.unitPriceMinor ? item.unitPriceMinor / 100 : item.price || 0,
+      qty: item.quantity || item.qty || 1,
+      size: item.variantTitle || item.variantId?.split('_')[1] || item.size || 'Standard',
+      image: item.imageUrl || item.image || '',
     }));
 
     let userObj: any = null;
@@ -464,12 +529,13 @@ export class IndiSellService implements OnModuleInit {
       customerEmail: userObj?.email || `customer_${phone || orderId}@tohay.in`,
       customerPhone: phone || userObj?.phone || '',
       items: orderItems,
-      itemsCount: orderItems.reduce((acc, i) => acc + i.qty, 0),
+      itemsCount: orderItems.reduce((acc: number, i: any) => acc + i.qty, 0),
       subtotal,
       discount,
       shipping,
       tax: 0,
       totalAmount,
+      pricingHash: pricedHash || '',
       paymentMethod: method === 'online' ? 'Razorpay (IndiSell)' : 'Cash on Delivery (IndiSell)',
       paymentStatus: PaymentStatus.PENDING,
       orderStatus: OrderStatus.PROCESSING,
@@ -492,22 +558,23 @@ export class IndiSellService implements OnModuleInit {
     });
 
     await newOrder.save();
-    this.logger.log(`Prepared pending order ${orderId} for attempt ${attemptId}`);
+    this.logger.log(`Prepared pending order ${orderId} for attempt ${attemptId} with totalMinor=${pricedTotalMinor}`);
 
     return {
       orderId,
       name: orderId,
       attemptId,
       quoteId,
-      totalMinor: quote.totalMinor,
+      totalMinor: pricedTotalMinor,
       currency: 'INR',
       method,
       financialStatus: 'pending',
+      ...(pricedHash ? { pricingHash: pricedHash } : {}),
     };
   }
 
-  private async executeComplete(data: CompleteRequest): Promise<BoundOrder> {
-    const { orderId, attemptId, quoteId, method, amountMinor, paymentRef, providerOrderId } = data;
+  private async executeComplete(data: any): Promise<BoundOrder> {
+    const { orderId, attemptId, quoteId, method, amountMinor, paymentRef, providerOrderId, pricingHash } = data;
 
     const order = await this.orderModel
       .findOne({
@@ -518,6 +585,12 @@ export class IndiSellService implements OnModuleInit {
     if (!order) {
       this.logger.error(`Order not found for completion: orderId=${orderId}, attemptId=${attemptId}`);
       throw new NotFoundException('order_not_found');
+    }
+
+    const storedHash = (order as any).pricingHash;
+    if (pricingHash && storedHash && pricingHash !== storedHash) {
+      this.logger.error(`pricingHash mismatch: received ${pricingHash}, stored ${storedHash}`);
+      throw new ConflictException('pricing_hash_mismatch');
     }
 
     const isPaid = method === 'online';
@@ -547,10 +620,11 @@ export class IndiSellService implements OnModuleInit {
       name: order.id,
       attemptId,
       quoteId,
-      totalMinor: amountMinor,
+      totalMinor: amountMinor || Math.round(order.totalAmount * 100),
       currency: 'INR',
       method,
       financialStatus: isPaid ? 'paid' : 'pending',
+      ...(storedHash || pricingHash ? { pricingHash: storedHash || pricingHash } : {}),
     };
   }
 
@@ -566,12 +640,15 @@ export class IndiSellService implements OnModuleInit {
       return { status: 'unknown', orderId: null };
     }
 
+    const storedHash = (order as any).pricingHash;
+
     return {
       status: order.orderStatus === OrderStatus.CANCELLED ? 'cancelled' : 'confirmed',
       orderId: order.id,
       financialStatus: order.paymentStatus === PaymentStatus.PAID ? 'paid' : 'pending',
       amountMinor: Math.round(order.totalAmount * 100),
       currency: 'INR',
+      ...(storedHash ? { pricingHash: storedHash } : {}),
     };
   }
 

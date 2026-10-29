@@ -80,7 +80,7 @@ export interface CompleteRequest {
 export interface ConnectorRequest {
   version: 1;
   requestId: string;
-  action: 'health' | 'quote' | 'prepare' | 'complete' | 'status' | 'release';
+  action: 'health' | 'quote' | 'prepare' | 'complete' | 'status' | 'release' | 'checkout';
   data: Record<string, any>;
 }
 

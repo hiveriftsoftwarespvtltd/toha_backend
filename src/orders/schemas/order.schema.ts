@@ -136,6 +136,9 @@ export class Order {
 
   @Prop({ default: '' })
   razorpayPaymentId: string;
+
+  @Prop({ default: '' })
+  pricingHash: string;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);
