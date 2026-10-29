@@ -265,6 +265,8 @@ function isOriginAllowed(reqOrigin: string | null, storefrontOrigin: string): bo
                 title: i.title,
                 quantity: i.quantity,
                 unitPriceMinor: i.unitPriceMinor,
+                ...(i.feedId ? { feedId: i.feedId } : {}),
+                ...(i.productId ? { productId: i.productId } : {}),
               })),
             }
           : null;

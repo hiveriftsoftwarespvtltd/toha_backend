@@ -354,11 +354,20 @@ export class IndiSellService implements OnModuleInit {
       const unitPriceMinor = Math.max(100, Math.round(Number(itemPrice || 1) * 100));
       subtotalMinor += unitPriceMinor * qty;
 
+      const imgUrl = (product && Array.isArray(product.images) && product.images[0]) || (product as any)?.image || item.image || '';
+      const fullImageUrl = imgUrl
+        ? (imgUrl.startsWith('http') ? imgUrl : `https://tohay.in${imgUrl.startsWith('/') ? '' : '/'}${imgUrl}`)
+        : 'https://tohay.in/assets/logo.png';
+
       quoteItems.push({
         variantId: `${pId || 'TK1001'}_${itemSize}`,
+        productId: product ? String(product.id || product._id) : String(pId || 'TK1001'),
         title: product ? `${product.name} (${itemSize})` : item.name || 'Festive Kids Outfit',
+        variantTitle: itemSize,
         quantity: qty,
         unitPriceMinor,
+        imageUrl: fullImageUrl,
+        productUrl: product ? `https://tohay.in/product/${product.slug || product.id}` : undefined,
       });
     }
 
