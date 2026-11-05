@@ -16,6 +16,7 @@
     "seed:sibling": "ts-node src/seed-sibling.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix"
   },
+  
   "dependencies": {
     "@nestjs/common": "^10.3.0",
     "@nestjs/config": "^3.2.0",
