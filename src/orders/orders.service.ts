@@ -37,7 +37,21 @@ export class OrdersService {
       throw new BadRequestException('Cart is empty. Please add items before checking out.');
     }
 
+    const paymentMethodUpper = (createOrderDto.paymentMethod || '').toUpperCase();
+    const isPayu = paymentMethodUpper.includes('PAYU');
+    const isRazorpay =
+      !isPayu &&
+      (paymentMethodUpper.includes('RAZORPAY') ||
+        paymentMethodUpper.includes('CARD') ||
+        paymentMethodUpper.includes('UPI'));
+
     const orderItems: any[] = [];
+    const stockOperations: Array<{
+      product: ProductDocument;
+      matchedVariant: any;
+      itemQty: number;
+      size: string;
+    }> = [];
     let subtotal = 0;
 
     for (const item of itemsToProcess) {
@@ -78,30 +92,45 @@ export class OrdersService {
       });
 
       if (product) {
-        // If matched size variant exists, check and deduct variant stock
+        // Validate stock upfront for ALL payment methods (including PayU) before creating order
         if (matchedVariant) {
           if (matchedVariant.isAvailable === false || matchedVariant.stock < itemQty) {
             throw new BadRequestException(`Sorry, size "${item.size}" of "${product.name}" is out of stock.`);
           }
-          matchedVariant.stock = Math.max(0, matchedVariant.stock - itemQty);
         }
-
         if (product.stock < itemQty) {
           throw new BadRequestException(`Sorry, "${product.name}" is currently out of stock (Available: ${product.stock} units).`);
         }
-        const prevStock = product.stock;
-        const newStock = Math.max(0, prevStock - itemQty);
-        product.stock = newStock;
-        await product.save();
+
+        stockOperations.push({
+          product,
+          matchedVariant,
+          itemQty,
+          size: item.size || 'Default',
+        });
+      }
+    }
+
+    // For non-PayU orders, deduct stock now (after all items passed validation).
+    // For PayU Hosted Checkout, stock deduction & cart clearing happen idempotently after PayU payment verification.
+    if (!isPayu) {
+      for (const op of stockOperations) {
+        if (op.matchedVariant) {
+          op.matchedVariant.stock = Math.max(0, op.matchedVariant.stock - op.itemQty);
+        }
+        const prevStock = op.product.stock;
+        const newStock = Math.max(0, prevStock - op.itemQty);
+        op.product.stock = newStock;
+        await op.product.save();
 
         await new this.inventoryModel({
-          productId: product.id,
-          productName: product.name,
+          productId: op.product.id,
+          productName: op.product.name,
           previousStock: prevStock,
-          adjustment: -itemQty,
+          adjustment: -op.itemQty,
           newStock,
           type: StockAdjustmentType.SALE,
-          reason: `Customer Order Placement (${item.size || 'Default'})`,
+          reason: `Customer Order Placement (${op.size})`,
         }).save();
       }
     }
@@ -113,16 +142,24 @@ export class OrdersService {
     const totalAmount = createOrderDto.totalAmount || Math.max(0, subtotal - discount + shipping);
 
     const orderId = `TK${Math.floor(10000 + Math.random() * 90000)}`;
-    const isRazorpay = (createOrderDto.paymentMethod || '').toUpperCase().includes('RAZORPAY') || (createOrderDto.paymentMethod || '').toUpperCase().includes('CARD') || (createOrderDto.paymentMethod || '').toUpperCase().includes('UPI');
     const paymentStatus = isRazorpay ? PaymentStatus.PAID : PaymentStatus.PENDING;
+    const orderStatus = isPayu ? OrderStatus.PENDING : OrderStatus.PROCESSING;
 
-    const timeline = [
-      { status: 'Placed', date: new Date().toLocaleString(), completed: true, note: 'Order placed successfully' },
-      { status: 'Confirmed', date: new Date().toLocaleString(), completed: true, note: 'Order verified' },
-      { status: 'Processing', date: new Date().toLocaleString(), completed: true, note: 'Packing at warehouse' },
-      { status: 'Shipped', date: 'Pending', completed: false, note: 'Awaiting courier dispatch' },
-      { status: 'Delivered', date: 'Pending', completed: false, note: 'Estimated delivery in 2-3 days' },
-    ];
+    const timeline = isPayu
+      ? [
+          { status: 'Placed', date: new Date().toLocaleString(), completed: true, note: 'Order created — awaiting PayU payment' },
+          { status: 'Confirmed', date: 'Pending', completed: false, note: 'Awaiting PayU payment verification' },
+          { status: 'Processing', date: 'Pending', completed: false, note: 'Packing begins after payment confirmation' },
+          { status: 'Shipped', date: 'Pending', completed: false, note: 'Awaiting courier dispatch' },
+          { status: 'Delivered', date: 'Pending', completed: false, note: 'Estimated delivery in 2-3 days' },
+        ]
+      : [
+          { status: 'Placed', date: new Date().toLocaleString(), completed: true, note: 'Order placed successfully' },
+          { status: 'Confirmed', date: new Date().toLocaleString(), completed: true, note: 'Order verified' },
+          { status: 'Processing', date: new Date().toLocaleString(), completed: true, note: 'Packing at warehouse' },
+          { status: 'Shipped', date: 'Pending', completed: false, note: 'Awaiting courier dispatch' },
+          { status: 'Delivered', date: 'Pending', completed: false, note: 'Estimated delivery in 2-3 days' },
+        ];
 
     const customerName = createOrderDto.shippingAddress?.name || user?.name || 'Valued Parent';
     const customerEmail = createOrderDto.shippingAddress?.email || user?.email || 'parent@tohaykids.com';
@@ -141,9 +178,10 @@ export class OrdersService {
       shipping,
       tax,
       totalAmount,
-      paymentMethod: createOrderDto.paymentMethod || 'COD',
+      paymentMethod: isPayu ? 'PayU Online' : (createOrderDto.paymentMethod || 'COD'),
       paymentStatus,
-      orderStatus: OrderStatus.PROCESSING,
+      orderStatus,
+      stockDeducted: !isPayu,
       shippingAddress: createOrderDto.shippingAddress,
       timeline,
       courier: { name: 'BlueDart Express', trackingNumber: `AWB${Math.floor(100000 + Math.random() * 900000)}` },
@@ -153,7 +191,7 @@ export class OrdersService {
 
     const savedOrder = await newOrder.save();
 
-    if (userId) {
+    if (userId && !isPayu) {
       await this.cartModel.findOneAndUpdate({ user: userId }, { items: [], discountPercent: 0 }).exec();
     }
 

@@ -15,11 +15,14 @@ export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> 
     const req = context.switchToHttp().getRequest();
     const url = req?.url || '';
 
-    // Bypass transformation for IndiSell connector & storefront checkout bridge to strictly adhere to IndiSell SDK contract
+    // Bypass transformation for IndiSell connector, storefront checkout bridge, and PayU redirect/webhook callbacks
     if (
       url.includes('/indisell') ||
       url.includes('/checkout/session') ||
-      url.includes('/checkout/verify')
+      url.includes('/checkout/verify') ||
+      url.includes('/payu/success') ||
+      url.includes('/payu/failure') ||
+      url.includes('/payu/webhook')
     ) {
       return next.handle();
     }
