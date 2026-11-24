@@ -62,11 +62,13 @@ async function bootstrap() {
     ]),
   );
 
-  // Comprehensive CORS Setup - reflects requested headers (including Authorization) properly with credentials
+  // Comprehensive CORS Setup - permits all frontend origins with full credentials & headers support
   app.enableCors({
     origin: true,
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: '*',
+    exposedHeaders: '*',
     optionsSuccessStatus: 204,
   });
 

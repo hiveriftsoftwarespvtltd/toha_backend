@@ -27,7 +27,6 @@ export enum PaymentStatus {
 export enum PaymentMethod {
   COD = 'COD',
   RAZORPAY = 'RAZORPAY',
-  PAYU = 'PAYU',
   CARD = 'CARD',
   UPI = 'UPI',
   NETBANKING = 'NETBANKING'

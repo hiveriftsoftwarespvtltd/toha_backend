@@ -23,7 +23,6 @@ import { SettingsModule } from './settings/settings.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { GenderCardsModule } from './gender-cards/gender-cards.module';
 import { IndiSellModule } from './indisell/indisell.module';
-import { PayuModule } from './payu/payu.module';
 
 @Module({
   imports: [
@@ -63,7 +62,6 @@ import { PayuModule } from './payu/payu.module';
     UploadsModule,
     GenderCardsModule,
     IndiSellModule,
-    PayuModule,
   ],
 })
 export class AppModule { }

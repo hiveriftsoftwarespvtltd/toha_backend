@@ -137,24 +137,6 @@ export class Order {
   @Prop({ default: '' })
   razorpayPaymentId: string;
 
-  @Prop({ default: '', index: true })
-  payuTxnId: string;
-
-  @Prop({ type: [String], default: [], index: true })
-  payuTxnHistory: string[];
-
-  @Prop({ default: '' })
-  payuMihpayId: string;
-
-  @Prop({ default: '' })
-  payuMode: string;
-
-  @Prop({ default: false })
-  stockDeducted: boolean;
-
-  @Prop({ default: '' })
-  returnOrigin: string;
-
   @Prop({ default: '' })
   pricingHash: string;
 
