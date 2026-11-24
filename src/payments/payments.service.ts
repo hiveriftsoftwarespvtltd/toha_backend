@@ -46,8 +46,23 @@ export class PaymentsService {
           orderPayload.notes = notes;
         }
         if (line_items && Array.isArray(line_items) && line_items.length > 0) {
+          const lineItemsSum = line_items.reduce(
+            (sum, item) => sum + (Number(item.price || item.amount || 0) * (Number(item.quantity) || 1)),
+            0,
+          );
+          const adjustedLineItems = [...line_items];
+          if (amountInPaisa > lineItemsSum) {
+            const diff = amountInPaisa - lineItemsSum;
+            adjustedLineItems.push({
+              sku: 'SHIPPING_FEE',
+              name: 'Standard Delivery Charge',
+              price: diff,
+              offer_price: diff,
+              quantity: 1,
+            });
+          }
           orderPayload.line_items_total = amountInPaisa;
-          orderPayload.line_items = line_items;
+          orderPayload.line_items = adjustedLineItems;
         }
         const order = await this.razorpayInstance.orders.create(orderPayload);
         return {
