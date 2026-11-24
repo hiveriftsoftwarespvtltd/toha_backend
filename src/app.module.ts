@@ -23,6 +23,7 @@ import { SettingsModule } from './settings/settings.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { GenderCardsModule } from './gender-cards/gender-cards.module';
 import { IndiSellModule } from './indisell/indisell.module';
+import { MagicCheckoutModule } from './magic-checkout/magic-checkout.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { IndiSellModule } from './indisell/indisell.module';
     UploadsModule,
     GenderCardsModule,
     IndiSellModule,
+    MagicCheckoutModule,
   ],
 })
 export class AppModule { }
