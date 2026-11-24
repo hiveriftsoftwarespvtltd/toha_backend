@@ -13,8 +13,21 @@ export class PaymentsController {
 
   @Post('create-order')
   @ApiOperation({ summary: 'Create Razorpay payment order token' })
-  async createRazorpayOrder(@Body() body: { amount: number; receipt: string }) {
-    const data = await this.paymentsService.createRazorpayOrder(body.amount, body.receipt);
+  async createRazorpayOrder(
+    @Body()
+    body: {
+      amount: number;
+      receipt: string;
+      notes?: Record<string, string>;
+      line_items?: any[];
+    },
+  ) {
+    const data = await this.paymentsService.createRazorpayOrder(
+      body.amount,
+      body.receipt,
+      body.notes,
+      body.line_items,
+    );
     return { success: true, message: 'Razorpay order created', data };
   }
 

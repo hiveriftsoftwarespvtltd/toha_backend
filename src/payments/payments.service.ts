@@ -26,17 +26,30 @@ export class PaymentsService {
     }
   }
 
-  async createRazorpayOrder(amountInRupees: number, receipt: string) {
+  async createRazorpayOrder(
+    amountInRupees: number,
+    receipt: string,
+    notes?: Record<string, string>,
+    line_items?: any[],
+  ) {
     const amountInPaisa = Math.round(amountInRupees * 100);
     const keyId = this.configService.get<string>('RAZORPAY_KEY_ID') || 'rzp_test_tohay_kids';
 
     if (this.razorpayInstance && !keyId.includes('test_tohay')) {
       try {
-        const order = await this.razorpayInstance.orders.create({
+        const orderPayload: any = {
           amount: amountInPaisa,
           currency: 'INR',
           receipt,
-        });
+        };
+        if (notes && Object.keys(notes).length > 0) {
+          orderPayload.notes = notes;
+        }
+        if (line_items && Array.isArray(line_items) && line_items.length > 0) {
+          orderPayload.line_items_total = amountInPaisa;
+          orderPayload.line_items = line_items;
+        }
+        const order = await this.razorpayInstance.orders.create(orderPayload);
         return {
           id: order.id,
           amount: order.amount,
