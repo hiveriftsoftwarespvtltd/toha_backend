@@ -58,22 +58,29 @@ export class MagicCheckoutService {
     const isFreeShipping = cartTotalInPaise >= 149900;
     const shippingChargeInPaise = isFreeShipping ? 0 : 9900;
 
-    const evaluatedAddresses = addresses.map((addr: any) => {
+    const evaluatedAddresses = addresses.map((addr: any, index: number) => {
       const rawPin = String(addr.zipcode || '').trim();
       const isValidPin = /^\d{6}$/.test(rawPin);
 
       return {
+        id: addr.id !== undefined ? addr.id : String(index),
         zipcode: addr.zipcode || '',
         state: addr.state || '',
+        state_code: addr.state_code || addr.state || '',
         country: addr.country || 'IN',
         serviceable: isValidPin,
-        cod: false, // Online only for now
+        cod: false,
         cod_amount: 0,
         shipping_methods: isValidPin
           ? [
               {
                 id: 'standard_delivery',
                 name: isFreeShipping ? 'Free Express Delivery' : 'Standard Delivery',
+                description: 'Delivery in 2-4 business days across India',
+                serviceable: true,
+                shipping_fee: shippingChargeInPaise,
+                cod: false,
+                cod_fee: 0,
                 charge: shippingChargeInPaise,
                 summary: 'Delivery in 2-4 business days across India',
               },
